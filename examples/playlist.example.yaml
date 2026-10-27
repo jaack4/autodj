@@ -1,0 +1,24 @@
+# Example playlist. Paths point to your own local audio files.
+# bpm and key are optional; missing values are auto-detected.
+# key accepts Camelot ("8A"), or musical notation ("A minor", "Am", "C major", "C").
+
+name: Friday warmup
+keep_order: false        # true = keep this order, only plan transitions
+energy_arc: warmup_peak  # warmup_peak | flat | peak_cooldown
+
+tracks:
+  - path: ~/Music/dj/artist-one-track-a.mp3
+    title: Track A
+    artist: Artist One
+    bpm: 122
+    key: 8A
+
+  - path: ~/Music/dj/artist-two-track-b.flac
+    title: Track B
+    artist: Artist Two
+    bpm: 124
+    key: A minor
+
+  - path: ~/Music/dj/artist-three-track-c.wav
+    bpm: 125
+    key: 9A

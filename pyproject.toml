@@ -1,0 +1,18 @@
+[project]
+name = "ai-dj"
+version = "0.1.0"
+description = "An AI DJ that plans set order and mixes tracks with DJ-style transitions"
+readme = "README.md"
+license = "MIT"
+authors = [
+    { name = "Jackson Moreno", email = "jacksonmoreno2004@gmail.com" }
+]
+requires-python = ">=3.12,<3.13"
+dependencies = []
+
+[project.scripts]
+ai-dj = "ai_dj:main"
+
+[build-system]
+requires = ["uv_build>=0.11.27,<0.12.0"]
+build-backend = "uv_build"
