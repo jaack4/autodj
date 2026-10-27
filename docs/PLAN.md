@@ -1,4 +1,4 @@
-# ai-dj — Project Plan
+# autodj — Project Plan
 
 ## Goal
 

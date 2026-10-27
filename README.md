@@ -1,4 +1,4 @@
-# ai-dj
+# autodj
 
 An AI DJ: give it a playlist of songs (with BPM and key) and it plans the set
 order and mixes the tracks together with DJ-style transitions (bass swaps,
@@ -24,7 +24,7 @@ own local audio files (MP3, WAV, FLAC). Audio is never committed to this repo.
 
 ```sh
 uv sync
-uv run ai-dj
+uv run autodj
 ```
 
 Requires Python 3.12, plus `brew install rubberband ffmpeg` for time-stretching and decoding.
