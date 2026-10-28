@@ -38,7 +38,7 @@ playlist.yaml ──► Ingest ──► Analyze ──► Plan set ──► Pl
 | Output | Purpose | Candidate tool |
 |---|---|---|
 | Beat grid and downbeats | Align bars | `allin1` or `beat_this` |
-| Sections (intro, verse, chorus, drop, break, outro) and phrase boundaries | Pick transition points | `allin1` (segments), with a fallback heuristic of 16/32-bar phrases from downbeats |
+| Sections (intro, build, drop, break, outro) and phrase boundaries | Pick transition points | Bar-level novelty + energy, segmented with DP that prefers 8/16/32-bar sections (`allin1` ruled out for now, see M0 findings) |
 | Stems (vocals, drums, bass, other) | Bass swaps, acapella overlays | Demucs (`htdemucs`) |
 | Per-bar energy and vocal presence | Avoid vocal clashes, shape energy | RMS and onset density on the mix and the vocal stem |
 | Integrated loudness | Level-match tracks | `pyloudnorm` |
@@ -103,6 +103,8 @@ Pydantic models, serialized to JSON.
       Check beat, downbeat and section accuracy by ear or with clicks. Decide
       between `allin1` and `beat_this`, and decide whether a phrase-boundary
       fallback is needed. *Biggest risk; do this first.*
+      **In progress. See [M0-findings.md](M0-findings.md).** Grid and
+      segmentation work; downbeats still need checking by ear and with `beat_this`.
 - [ ] **M1: Two-track render.** Hand-written MixPlan for A→B with
       `bass_swap_blend` at hand-picked bars. This proves time-stretching,
       alignment, automation and export.

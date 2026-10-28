@@ -4,7 +4,7 @@ An AI DJ: give it a playlist of songs (with BPM and key) and it plans the set
 order and mixes the tracks together with DJ-style transitions (bass swaps,
 filter sweeps, echo outs, acapella overlays), then renders one continuous mix.
 
-> **Status:** planning. See [docs/PLAN.md](docs/PLAN.md) for the architecture and milestones.
+> **Status:** M0 (analysis) in progress. See [docs/PLAN.md](docs/PLAN.md) for the architecture and milestones, and [docs/M0-findings.md](docs/M0-findings.md) for current results.
 
 ## How it will work
 
@@ -24,8 +24,13 @@ own local audio files (MP3, WAV, FLAC). Audio is never committed to this repo.
 
 ```sh
 uv sync
-uv run autodj
+uv run autodj analyze path/to/track.mp3   # beat grid, key, LUFS, sections
+uv run pytest
 ```
+
+`analyze` writes a cached analysis to `.cache/analysis/` and a report to
+`output/<track>/`: `clicks.wav` (track + beat, bar and section clicks, so you can check by ear)
+and `analysis.png`.
 
 Requires Python 3.12, plus `brew install rubberband ffmpeg` for time-stretching and decoding.
 

@@ -1,0 +1,99 @@
+"""Per-track analysis: beat grid, key, loudness and phrase-aligned sections, cached by file hash."""
+
+import hashlib
+import sys
+from pathlib import Path
+
+import librosa
+import numpy as np
+import pyloudnorm
+
+from autodj.analysis.beats import BackendUnavailable, beat_this_checkpoint_cached, detect_grid
+from autodj.analysis.key import estimate_key
+from autodj.analysis.structure import bar_features, novelty, segment
+from autodj.camelot import key_name, to_camelot
+from autodj.models import Analysis
+
+ANALYSIS_VERSION = 3
+ANALYSIS_SR = 22050
+CACHE_DIR = Path(".cache/analysis")
+BACKENDS = ("beat_this", "librosa")
+
+
+def _sha256(path: Path) -> str:
+    with path.open("rb") as f:
+        return hashlib.file_digest(f, "sha256").hexdigest()
+
+
+def _cache_path(sha: str, backend: str) -> Path:
+    return CACHE_DIR / f"{sha[:16]}.{backend}.v{ANALYSIS_VERSION}.json"
+
+
+def _analyze(path: Path, sha: str, backend: str, bpm_hint: float | None) -> Analysis:
+    stereo, native_sr = librosa.load(path, sr=None, mono=False)
+    stereo = np.atleast_2d(stereo)
+    lufs = pyloudnorm.Meter(native_sr).integrated_loudness(stereo.T)
+    y = librosa.resample(stereo.mean(axis=0), orig_sr=native_sr, target_sr=ANALYSIS_SR)
+    sr = ANALYSIS_SR
+    duration = len(y) / sr
+
+    grid = detect_grid(y, sr, duration, backend, bpm_hint)
+    bar_len = 4 * grid.period
+    bar_starts = grid.downbeats[grid.downbeats + bar_len / 2 <= duration]
+
+    energy, feats = bar_features(y, sr, bar_starts, bar_len)
+    nov = novelty(feats)
+    sections = segment(energy, nov, bar_starts, bar_len)
+    pc, minor, key_conf = estimate_key(y, sr)
+
+    return Analysis(
+        version=ANALYSIS_VERSION,
+        path=str(path),
+        sha256=sha,
+        duration=round(duration, 3),
+        beat_backend=backend,
+        bpm=round(grid.bpm, 2),
+        beats=np.round(grid.beats, 4).tolist(),
+        downbeats=np.round(bar_starts, 4).tolist(),
+        kick_coverage=round(grid.kick_coverage, 3),
+        kick_offset_ms=round(grid.kick_offset_ms, 1),
+        grid_drift_ms=round(grid.drift_ms, 1),
+        grid_ok=grid.ok,
+        key=to_camelot(pc, minor),
+        key_name=key_name(pc, minor),
+        key_confidence=round(key_conf, 3),
+        lufs=round(float(lufs), 2),
+        bar_energy=np.round(energy, 3).tolist(),
+        bar_novelty=np.round(nov, 3).tolist(),
+        sections=sections,
+    )
+
+
+def analyze_file(
+    path: Path, backend: str = "auto", bpm_hint: float | None = None, force: bool = False
+) -> Analysis:
+    """Analyze a track. backend='auto' prefers beat_this (if its weights are downloaded), else librosa.
+
+    Pass backend='beat_this' explicitly to trigger the weights download.
+    """
+    path = path.expanduser().resolve()
+    sha = _sha256(path)
+    if backend == "auto":
+        order = BACKENDS if beat_this_checkpoint_cached() else ("librosa",)
+    else:
+        order = (backend,)
+    for i, b in enumerate(order):
+        cached = _cache_path(sha, b)
+        if cached.exists() and not force:
+            return Analysis.model_validate_json(cached.read_text())
+        try:
+            result = _analyze(path, sha, b, bpm_hint)
+        except BackendUnavailable as e:
+            if i == len(order) - 1:
+                raise
+            print(f"warning: {e}; falling back to {order[i + 1]}", file=sys.stderr)
+            continue
+        cached.parent.mkdir(parents=True, exist_ok=True)
+        cached.write_text(result.model_dump_json(indent=1))
+        return result
+    raise AssertionError("unreachable")

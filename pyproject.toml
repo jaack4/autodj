@@ -8,7 +8,16 @@ authors = [
     { name = "Jackson Moreno", email = "jacksonmoreno2004@gmail.com" }
 ]
 requires-python = ">=3.12,<3.13"
-dependencies = []
+dependencies = [
+    "beat-this>=1.1.0",
+    "librosa>=1.0.0",
+    "matplotlib>=3.11.2",
+    "numpy>=2.5.4",
+    "pydantic>=2.14.1",
+    "pyloudnorm>=0.2.0",
+    "soundfile>=0.14.0",
+    "typer>=0.27.3",
+]
 
 [project.scripts]
 autodj = "autodj:main"
@@ -16,3 +25,8 @@ autodj = "autodj:main"
 [build-system]
 requires = ["uv_build>=0.11.27,<0.12.0"]
 build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.2.0",
+]

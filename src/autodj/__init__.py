@@ -1,2 +1,4 @@
 def main() -> None:
-    print("Hello from autodj!")
+    from autodj.cli import app
+
+    app()
