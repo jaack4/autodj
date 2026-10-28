@@ -4,8 +4,8 @@ An AI DJ: give it a playlist of songs and it plans the set order and mixes the
 tracks together with DJ-style transitions (bass swaps, filter sweeps, echo outs,
 drop cuts, acapella overlays), then renders one continuous mix.
 
-> **Status:** M0–M4 built (analysis, rendering, transition planning, full sets,
-> transition library, stems). Needs listening tests on real playlists. See
+> **Status:** M0–M5 built (analysis, rendering, transition planning, full sets,
+> transition library, stems, an LLM creative director). Needs listening tests on real playlists. See
 > [docs/PLAN.md](docs/PLAN.md) and the findings for [M0](docs/M0-findings.md),
 > [M1](docs/M1-findings.md) and [M2–M4](docs/M2-M4-findings.md).
 
@@ -70,7 +70,20 @@ uv run autodj pair a.mp3 b.mp3 --type echo_out        # or bass_swap_blend, filt
 uv run autodj render "output/plans/a -- b.echo_out.json"
 ```
 
-**4. Tweak a plan by hand.** Edit the JSON (bars, overlap, transition type,
+**4. Let Claude direct the set** (optional, needs `ANTHROPIC_API_KEY`)
+```sh
+uv run autodj direct output/sets/new.json            # -> output/sets/new.directed.json
+uv run autodj render output/sets/new.directed.json   # render both and compare
+```
+The creative director (Claude Opus 5.5) sees each transition's checked options
+(the planner's pick, the best of each type, and a few runners-up) plus a summary
+of every track. It picks one option per transition, explains each pick, and
+titles and narrates the set. It only chooses; the planner and renderer still
+handle all timing and audio, and an invalid pick is replaced automatically. One
+request per set: about $0.04 for 3 tracks, roughly $0.10–0.50 for 20.
+`set --director` runs it straight after planning.
+
+**5. Tweak a plan by hand.** Edit the JSON (bars, overlap, transition type,
 `ramp_bars`, a track's `bpm`) and run `render` again.
 
 ## Playlist format

@@ -94,3 +94,4 @@ class MixPlan(BaseModel):
     target_lufs: float = -9.0  # per-track loudness before the master limiter
     tracks: list[PlanTrack]
     transitions: list[Transition]  # one per adjacent pair
+    director: dict | None = None  # title, narrative, model, usage from the creative director (if used)

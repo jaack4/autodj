@@ -120,6 +120,7 @@ def build_set(
     arc: Annotated[str | None, typer.Option(help="warmup_peak (tempo rises) | flat")] = None,
     bpm: Annotated[float | None, typer.Option(help="Lock every track to this tempo")] = None,
     stems: Annotated[bool, typer.Option(help="Separate stems: avoids vocal clashes, enables acapella_overlay")] = False,
+    director: Annotated[bool, typer.Option(help="Also ask Claude to pick transitions and narrate (needs ANTHROPIC_API_KEY)")] = False,
     output: Annotated[Path | None, typer.Option("-o", help="Plan file to write")] = None,
 ) -> None:
     """Plan a whole set: analyze, order by key/tempo/transition quality, plan every blend."""
@@ -143,7 +144,60 @@ def build_set(
             _warn_pair(a.model_copy(update={"key": key}),
                        analyses[k + 1].model_copy(update={"key": plan.tracks[k + 1].key or analyses[k + 1].key}),
                        tr.type)
-    _write_plan(plan, output or OUTPUT_DIR / "sets" / f"{plan.name}.json")
+    plan_path = output or OUTPUT_DIR / "sets" / f"{plan.name}.json"
+    _write_plan(plan, plan_path)
+    if director:
+        _run_director(plan, plan_path, "claude-opus-5-5")
+
+
+def _run_director(plan, plan_path: Path, model: str) -> Path | None:
+    """Ask the creative director to re-pick transitions; writes <plan>.directed.json. Returns its path."""
+    from autodj.analysis import analyze_file
+    from autodj.director import DirectorError
+    from autodj.director import direct as direct_plan
+
+    analyses = []
+    for t in plan.tracks:
+        a = analyze_file(Path(t.path), bpm_hint=t.bpm_hint)
+        analyses.append(a.model_copy(update={"key": t.key, "key_confidence": 1.0}) if t.key else a)
+    typer.echo(f"asking the creative director ({model})...", err=True)
+    try:
+        directed, repairs = direct_plan(plan, analyses, model=model)
+    except DirectorError as e:
+        typer.secho(f"director failed: {e}. The planner's plan is unchanged.", fg="red", err=True)
+        return None
+    d = directed.director
+    typer.secho(f"\n{d['title']}", bold=True)
+    typer.echo(d["narrative"])
+    for k, (old, new) in enumerate(zip(plan.transitions, directed.transitions), 1):
+        changed = (old.type, old.out_bar, old.in_bar, old.overlap_bars) != (new.type, new.out_bar, new.in_bar,
+                                                                           new.overlap_bars)
+        how = f"{new.overlap_bars}-bar {new.type}" if new.overlap_bars else new.type
+        typer.echo(f"  {k}. {how}, bar {new.out_bar} into bar {new.in_bar}"
+                   f"{'  (changed from the planner)' if changed else ''}\n     {new.notes[0]}")
+    for r in repairs:
+        typer.secho(f"  repaired: {r}", fg="yellow")
+    cost = f", about ${d['cost_usd']:.2f}" if "cost_usd" in d else ""
+    typer.echo(f"({d['model']}: {d['input_tokens']} input + {d['output_tokens']} output tokens{cost})")
+    out = plan_path.with_name(plan_path.stem + ".directed.json")
+    _write_plan(directed, out)
+    return out
+
+
+@app.command()
+def direct(
+    plan_file: Annotated[Path, typer.Argument(exists=True, dir_okay=False, help="A plan from `set` or `pair`")],
+    model: Annotated[str, typer.Option(help="Claude model")] = "claude-opus-5-5",
+) -> None:
+    """Have Claude (the creative director) pick each transition from the planner's options and narrate the set.
+
+    Needs ANTHROPIC_API_KEY. One request per set (typically $0.05-0.50). Writes <plan>.directed.json next
+    to the original, so you can render both and compare.
+    """
+    from autodj.models import MixPlan
+
+    if _run_director(MixPlan.model_validate_json(plan_file.read_text()), plan_file, model) is None:
+        raise typer.Exit(1)
 
 
 @app.command()

@@ -122,7 +122,8 @@ Pydantic models, serialized to JSON.
       test on a real playlist.
 - [x] **M4: Transition library.** Filter sweep, echo out, drop cut, stems and
       acapella overlay are done; loop extend is not.
-- [ ] **M5: LLM creative director.** Picks transitions and writes a narrative for the set.
+- [x] **M5: LLM creative director.** Picks transitions and writes a narrative for the set.
+      `autodj direct`, see [M5-findings.md](M5-findings.md).
 - [ ] **Later:** a simple waveform and plan viewer, export to rekordbox or
       Mixxx, real-time playback.
 

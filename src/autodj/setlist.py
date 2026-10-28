@@ -10,10 +10,9 @@ import yaml
 from autodj.analysis import analyze_file
 from autodj.camelot import camelot_distance, parse_key
 from autodj.models import Analysis, MixPlan, PlanTrack
-from autodj.planner import Candidate, best_transition, tempo_gap
+from autodj.planner import Candidate, best_transition, min_out_after, tempo_gap
 
 AUDIO_EXTENSIONS = {".mp3", ".wav", ".flac", ".aiff", ".aif", ".m4a", ".ogg"}
-MIN_SOLO_BARS = 8  # a track plays alone at least this long between its two blends (if it's long enough)
 MIN_TRACK_BARS = 16  # shorter files (jingles, snippets) are skipped
 EXACT_ORDER_MAX_TRACKS = 12  # Held-Karp above this gets slow; fall back to greedy + 2-opt
 ARCS = ("warmup_peak", "flat")
@@ -160,8 +159,7 @@ def build_plan(
         c = transitions[i, j]
         if c.out_bar < min_out:  # would collide with this track's incoming blend
             c = best_transition(entries[i].analysis, entries[j].analysis, min_out_bar=min_out)
-        blend_end = c.in_bar + c.overlap
-        min_out = blend_end + min(MIN_SOLO_BARS, max(0, entries[j].analysis.n_bars - blend_end - 4))
+        min_out = min_out_after(c, entries[j].analysis)
         t = c.transition()
         t.notes = [f"score {c.score:+.2f}"] + c.reasons
         plan_transitions.append(t)

@@ -41,8 +41,12 @@ def _data(plan: MixPlan, decks: list[Deck], windows: list[TransitionWindow], che
             "bars": f"bar {tr.out_bar} → bar {tr.in_bar}" + (f", {tr.overlap_bars} bars" if tr.overlap_bars else ""),
             "notes": tr.notes, "check": check.get("verdict", ""), "nudge": f"{w.nudge_ms:+.0f} ms ({w.nudge_source})",
         })
+    director = None
+    if plan.director:
+        director = {"title": plan.director.get("title", ""), "narrative": plan.director.get("narrative", ""),
+                    "model": plan.director.get("model", "")}
     return {"name": plan.name, "duration": max(t["end"] for t in tracks), "tracks": tracks,
-            "transitions": transitions, "colors": SECTION_COLORS}
+            "transitions": transitions, "colors": SECTION_COLORS, "director": director}
 
 
 def encode_mp3(wav: Path) -> Path:
@@ -94,7 +98,8 @@ TEMPLATE = """<!doctype html>
   tr.row { cursor:pointer; } tr.row:hover { background:#20262d; }
   .notes { color:var(--dim); font-size:12px; } .time { font-variant-numeric:tabular-nums; color:var(--accent); }
 </style></head><body>
-<h1>__TITLE__</h1><div class="sub" id="sub"></div>
+<h1 id="title">__TITLE__</h1><div class="sub" id="sub"></div>
+<p id="story" style="display:none;max-width:780px;margin:0 0 16px"></p>
 <audio id="audio" controls preload="auto" src="__AUDIO_SRC__"></audio>
 <div id="audioerr" style="display:none;color:#f0a35e;margin:-8px 0 16px">Couldn't load the audio here.
   Open <b>__AUDIO_FILE__</b> (next to this page) in a browser or music player instead.</div>
@@ -110,6 +115,12 @@ const pct = t => (100 * t / D.duration) + "%";
 const clock = t => Math.floor(t / 60) + ":" + (t % 60).toFixed(1).padStart(4, "0");
 const el = (tag, cls, parent) => { const e = document.createElement(tag); if (cls) e.className = cls; parent.appendChild(e); return e; };
 document.getElementById("sub").textContent = D.tracks.length + " tracks · " + clock(D.duration) + " · click anywhere on the timeline to jump";
+if (D.director) {
+  document.getElementById("title").textContent = D.director.title;
+  const story = document.getElementById("story");
+  story.textContent = D.director.narrative + " (directed by " + D.director.model + ")";
+  story.style.display = "block";
+}
 D.tracks.forEach(t => {
   const lane = el("div", "lane", inner), box = el("div", "track", lane);
   box.style.left = pct(t.start); box.style.width = pct(t.end - t.start);

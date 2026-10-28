@@ -254,6 +254,15 @@ def candidates(a: Analysis, b: Analysis, min_out_bar: int = 0, kinds: tuple[str,
     return sorted(found, key=lambda c: c.score, reverse=True)
 
 
+MIN_SOLO_BARS = 8  # a track plays alone at least this long between its two transitions (if long enough)
+
+
+def min_out_after(c: Candidate, b: Analysis) -> int:
+    """Earliest bar where track B may start its own outgoing transition after entering via c."""
+    blend_end = c.in_bar + c.overlap
+    return blend_end + min(MIN_SOLO_BARS, max(0, b.n_bars - blend_end - 4))
+
+
 def best_transition(a: Analysis, b: Analysis, min_out_bar: int = 0, kinds: tuple[str, ...] | None = None) -> Candidate:
     found = candidates(a, b, min_out_bar, kinds)
     if found:
