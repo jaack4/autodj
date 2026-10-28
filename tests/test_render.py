@@ -112,3 +112,58 @@ def test_time_stretch_follows_a_tempo_ramp():
         cc = np.correlate(s[lo : lo + int(0.12 * SR) + 800], burst, mode="valid")
         errors.append((lo + int(np.argmax(cc))) / SR - t)
     assert np.abs(errors).max() * 1000 < 6.0
+
+
+def test_lowpass_mask_attenuates_above_cutoff():
+    from autodj.render import _apply_filters
+
+    t = np.arange(SR * 2) / SR
+    x = np.stack([np.sin(2 * np.pi * 5000 * t)] * 2)
+    closed = _apply_filters(x, t, [("lowpass", [(0.0, 1000.0), (2.0, 1000.0)])], SR)
+    opened = _apply_filters(x, t, [("lowpass", [(0.0, 20000.0), (2.0, 20000.0)])], SR)
+    rms = lambda y: np.sqrt(np.mean(y[:, SR // 4 : -SR // 4] ** 2))
+    assert rms(closed) < 0.01 * rms(x)
+    assert rms(opened) == pytest.approx(rms(x), rel=0.02)
+
+
+def test_echo_tail_repeats_on_the_delay_grid():
+    from autodj.render import Echo, _echo_tail
+
+    beat = 0.5
+    seg = np.zeros((2, SR * 4))
+    seg[:, int(1.6 * SR)] = 1.0  # a click inside the beat before the cut at 2.0 s
+    e = Echo(cut=2.0, beat=beat, delay_beats=0.75, feedback=0.5)
+    start, tail = _echo_tail(seg, 0.0, e, SR)
+    assert start == int(1.5 * SR)
+    repeat = lambda k: int((0.1 + k * 0.375) * SR)
+    peaks = [k for k in range(1, 4) if np.abs(tail[0, repeat(k) - 200 : repeat(k) + 200]).max() > 0.01]
+    assert peaks == [1, 2, 3]
+    assert np.abs(tail[0, : int(0.4 * SR)]).max() < 0.01  # nothing before the first repeat
+
+
+@pytest.mark.parametrize("kind", ["echo_out", "drop_cut"])
+def test_cuts_start_the_incoming_track_on_the_cut(club_track, kind):
+    from autodj.models import Transition
+    from autodj.render import Echo, apply_transition, place
+
+    plan = _plan([Transition(type=kind, out_bar=64, in_bar=16, overlap_bars=0)])
+    da, db = _decks(plan, [club_track(bpm=126.0), club_track(bpm=126.0)])
+    (w,) = place(plan, [da, db])
+    apply_transition(w)
+    cut = da.offset + da.bar_time(64)
+    assert db.offset + db.play_from == pytest.approx(cut)
+    if kind == "echo_out":
+        assert da.play_to + da.offset > cut + Echo(cut, w.beat, 0.75, 0.55).tail
+        assert da.echo is not None
+    gains = lambda d, t: np.interp(t, *zip(*d.automation["mid"]))
+    assert gains(da, cut + 0.01) == 0 and gains(db, cut + 0.01) == 1
+    assert gains(da, cut - 0.01) == 1 and gains(db, cut - 0.01) == 0
+
+
+def test_overlap_must_match_transition_type(club_track):
+    from autodj.models import Transition
+    from autodj.render import place
+
+    plan = _plan([Transition(type="echo_out", out_bar=64, in_bar=16, overlap_bars=16)])
+    with pytest.raises(ValueError, match="overlap_bars"):
+        place(plan, _decks(plan, [club_track(), club_track()]))

@@ -63,12 +63,14 @@ class PlanTrack(BaseModel):
 
 
 class Transition(BaseModel):
-    type: Literal["bass_swap_blend"] = "bass_swap_blend"
-    out_bar: int  # bar of the outgoing track where the overlap starts
+    type: Literal["bass_swap_blend", "filter_sweep", "echo_out", "drop_cut"] = "bass_swap_blend"
+    out_bar: int  # bar of the outgoing track where the overlap (or cut) starts
     in_bar: int = 0  # bar of the incoming track that lands on out_bar
-    overlap_bars: int = 16
+    overlap_bars: int = 16  # 0 for echo_out / drop_cut
     swap_bar: int | None = None  # bar within the overlap where basslines swap (default: halfway)
     ramp_bars: int = 16  # after the blend, the incoming track glides to its own tempo over this many bars
+    echo_delay_beats: float = 0.75  # echo_out: delay time
+    echo_feedback: float = 0.55  # echo_out: level of each repeat
     notes: list[str] = []  # planner's reasons, for humans
 
 

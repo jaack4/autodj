@@ -26,6 +26,12 @@ BANDS = ("low", "mid", "high")
 SWAP_RAMP_S = 0.05  # bass swap completes exactly on the downbeat
 CEILING_DBFS = -1.0
 CURVE_POINTS = 32
+CUT_FADE_S = 0.004  # hard cuts still get a few ms to avoid clicks
+SWEEP_TOP_HZ = 2000.0  # outgoing high-pass ends here
+SWEEP_BOTTOM_HZ = 250.0  # incoming low-pass starts here
+ECHO_FLOOR = 0.02  # stop repeating below this level
+ECHO_LOW_HZ, ECHO_HIGH_HZ = 300.0, 6000.0
+CUT_ALIGN_BARS = 4  # bars either side of a cut used to line up the groove
 TIME_MAP_STEP = 0.005  # seconds
 
 Breakpoints = list[tuple[float, float]]  # (mix time s, gain)
@@ -44,6 +50,8 @@ class Deck:
     play_from: float = 0.0  # output seconds
     play_to: float = 0.0
     automation: dict[str, Breakpoints] = field(default_factory=lambda: {b: [] for b in BANDS})
+    filters: list[tuple[str, Breakpoints]] = field(default_factory=list)  # ("highpass"|"lowpass", (mix t, Hz))
+    echo: "Echo | None" = None
     _map_in: np.ndarray = field(default_factory=lambda: np.zeros(0))
     _map_out: np.ndarray = field(default_factory=lambda: np.zeros(0))
 
@@ -127,6 +135,87 @@ def _bass_swap_blend(out: Deck, inc: Deck, t0: float, t1: float, ts: float) -> N
         out.automation[band] += _fade(ts, t1, rising=False)
 
 
+@dataclass
+class Echo:
+    """Tempo-synced echo of the outgoing deck's last beat, engaged as the dry signal is cut."""
+
+    cut: float  # mix time
+    beat: float  # seconds
+    delay_beats: float
+    feedback: float
+
+    @property
+    def repeats(self) -> int:
+        return int(np.ceil(np.log(ECHO_FLOOR) / np.log(self.feedback)))
+
+    @property
+    def tail(self) -> float:
+        return self.repeats * self.delay_beats * self.beat
+
+
+def _sweep(t0: float, t1: float, f0: float, f1: float) -> Breakpoints:
+    """Exponential cutoff sweep (even steps in pitch)."""
+    x = np.linspace(0, 1, CURVE_POINTS)
+    return list(zip(t0 + x * (t1 - t0), f0 * (f1 / f0) ** x))
+
+
+def _cut(out: Deck, inc: Deck, t: float) -> None:
+    for band in BANDS:
+        out.automation[band] += [(t - CUT_FADE_S, 1.0), (t, 0.0)]
+        inc.automation[band] += [(t - CUT_FADE_S, 0.0), (t, 1.0)]
+
+
+def apply_transition(w: "TransitionWindow") -> None:
+    """Write the automation for one transition onto its two decks."""
+    tr, a, b = w.transition, w.out_deck, w.in_deck
+    if tr.type == "bass_swap_blend":
+        _bass_swap_blend(a, b, w.start, w.end, w.swap)
+    elif tr.type == "filter_sweep":
+        _bass_swap_blend(a, b, w.start, w.end, w.swap)
+        a.filters.append(("highpass", _sweep(w.start, w.end, 20.0, SWEEP_TOP_HZ)))
+        b.filters.append(("lowpass", _sweep(w.start, w.swap, SWEEP_BOTTOM_HZ, 20000.0)))
+    elif tr.type == "echo_out":
+        _cut(a, b, w.start)
+        a.echo = Echo(cut=w.start, beat=w.beat, delay_beats=tr.echo_delay_beats, feedback=tr.echo_feedback)
+    elif tr.type == "drop_cut":
+        _cut(a, b, w.start)
+    else:
+        raise ValueError(f"Unknown transition type: {tr.type}")
+
+
+def _apply_filters(x: np.ndarray, times: np.ndarray, filters: list[tuple[str, Breakpoints]], sr: int) -> np.ndarray:
+    """Time-varying 4th-order Butterworth-shaped filters, applied as an STFT magnitude mask."""
+    n_fft, hop = 2048, 512
+    spec = librosa.stft(x, n_fft=n_fft, hop_length=hop)
+    freqs = np.maximum(librosa.fft_frequencies(sr=sr, n_fft=n_fft), 1.0)[:, None]
+    frame_t = times[0] + np.arange(spec.shape[-1]) * hop / sr
+    mask = np.ones((len(freqs), spec.shape[-1]))
+    for kind, points in filters:
+        ts, fs = zip(*points)
+        cutoff = np.exp(np.interp(frame_t, ts, np.log(fs)))[None, :]
+        ratio = freqs / cutoff if kind == "lowpass" else cutoff / freqs
+        mask *= 1 / np.sqrt(1 + ratio**8)
+    return librosa.istft(spec * mask, hop_length=hop, length=x.shape[-1])
+
+
+def _echo_tail(seg: np.ndarray, seg_t0: float, e: Echo, sr: int) -> tuple[int, np.ndarray]:
+    """(start index in seg, tail audio): repeats of the beat before the cut, filtered thin."""
+    src_end = int(round((e.cut - seg_t0) * sr))
+    src_start = max(0, src_end - int(round(e.beat * sr)))
+    src = seg[:, src_start:src_end].copy()
+    edge = min(int(0.01 * sr), src.shape[1] // 2)
+    if edge:
+        ramp = np.linspace(0, 1, edge)
+        src[:, :edge] *= ramp
+        src[:, -edge:] *= ramp[::-1]
+    step = int(round(e.delay_beats * e.beat * sr))
+    tail = np.zeros((2, e.repeats * step + src.shape[1]))
+    for k in range(1, e.repeats + 1):
+        tail[:, k * step : k * step + src.shape[1]] += e.feedback**k * src
+    tail = sosfiltfilt(butter(2, [ECHO_LOW_HZ, ECHO_HIGH_HZ], "bandpass", fs=sr, output="sos"), tail, axis=-1)
+    return src_start, tail
+
+
 def _split_bands(x: np.ndarray, sr: int) -> dict[str, np.ndarray]:
     """Zero-phase 3-band split that sums back to the input exactly."""
     low = sosfiltfilt(butter(4, LOW_HZ, "lowpass", fs=sr, output="sos"), x, axis=-1)
@@ -146,7 +235,10 @@ def _check_transition(tr: Transition, a: Deck, b: Deck) -> None:
         raise ValueError(f"out_bar {tr.out_bar} outside {Path(a.analysis.path).name} ({n_a} bars)")
     if not 0 <= tr.in_bar < n_b or tr.in_bar + tr.overlap_bars > n_b:
         raise ValueError(f"in_bar {tr.in_bar} + overlap doesn't fit {Path(b.analysis.path).name} ({n_b} bars)")
-    if tr.swap_bar is not None and not 0 < tr.swap_bar < tr.overlap_bars:
+    is_cut = tr.type in ("echo_out", "drop_cut")
+    if is_cut != (tr.overlap_bars == 0):
+        raise ValueError(f"{tr.type} needs overlap_bars {'== 0' if is_cut else '> 0'}")
+    if tr.swap_bar is not None and not is_cut and not 0 < tr.swap_bar < tr.overlap_bars:
         raise ValueError("swap_bar must fall inside the overlap")
 
 
@@ -176,13 +268,20 @@ def _analysis_offset_ms(d: Deck, start_bar: int, end_bar: int) -> float:
     return off / float(d.factor_at(d.bar_input_time(start_bar)))
 
 
-def _measured_offset_ms(d: Deck, audio: np.ndarray, start_bar: int, end_bar: int, sr: int) -> tuple[float, float]:
-    """Measure a deck's kicks against its own mapped grid over some bars of the stretched audio."""
+def _measured_offset_ms(d: Deck, audio: np.ndarray, start_bar: int, end_bar: int, sr: int) -> tuple[float, bool]:
+    """Measure a deck's kicks against its own mapped grid over some bars of the stretched audio.
+
+    Returns (offset ms, reliable). Unreliable: too few kicks, or the best match sits at the edge
+    of the +-1/4 beat search (the real alignment is probably outside it).
+    """
     t0, t1 = d.bar_time(start_bar), d.bar_time(end_bar)
     y = audio[:, int(round(t0 * sr)) : int(round(t1 * sr))].mean(axis=0)
     beat = (t1 - t0) / (4 * (end_bar - start_bar))
     beats = np.arange(0, len(y) / sr - beat, beat)
-    return onset_offset(y, sr, beats, beat, center_ms=_analysis_offset_ms(d, start_bar, end_bar))
+    center = _analysis_offset_ms(d, start_bar, end_bar)
+    off, confidence = onset_offset(y, sr, beats, beat, center_ms=center)
+    at_edge = abs(off - center) >= 0.24 * beat * 1000
+    return off, confidence >= MIN_CONFIDENCE and not at_edge
 
 
 def place(plan: MixPlan, decks: list[Deck]) -> list[TransitionWindow]:
@@ -204,11 +303,15 @@ def place(plan: MixPlan, decks: list[Deck]) -> list[TransitionWindow]:
     for tr, a, b in zip(plan.transitions, decks, decks[1:]):
         t0 = a.offset + a.bar_time(tr.out_bar)
         t1 = a.offset + a.bar_time(tr.out_bar + tr.overlap_bars)
-        bar = (t1 - t0) / tr.overlap_bars
+        bar = a.bar_time(tr.out_bar + 1) - a.bar_time(tr.out_bar)
         b.play_from = b.bar_time(tr.in_bar)
         b.offset = t0 - b.play_from
         ts = t0 + (tr.swap_bar if tr.swap_bar is not None else tr.overlap_bars // 2) * bar
         a.play_to = t1 - a.offset
+        if tr.type == "echo_out":
+            a.play_to += Echo(t0, bar / 4, tr.echo_delay_beats, tr.echo_feedback).tail + bar / 4
+        elif tr.type == "drop_cut":
+            a.play_to += CUT_FADE_S
         windows.append(TransitionWindow(tr, t0, ts, t1, bar / 4, a, b))
     decks[-1].play_to = decks[-1].to_out(decks[-1].analysis.duration)
     return windows
@@ -218,8 +321,10 @@ def _deck_signal(d: Deck, audio: np.ndarray, sr: int) -> tuple[int, np.ndarray]:
     """(mix start sample, automated audio) for the part of the deck that plays."""
     s0 = int(round(d.play_from * sr))
     s1 = min(int(round(d.play_to * sr)), audio.shape[1])
-    seg = audio[:, s0:s1] * d.gain
-    times = d.offset + np.arange(s0, s1) / sr
+    n = int(round(d.play_to * sr)) - s0
+    seg = np.zeros((2, n), np.float32)
+    seg[:, : s1 - s0] = audio[:, s0:s1] * d.gain  # zero-padded if an echo tail runs past the audio
+    times = d.offset + np.arange(s0, s0 + n) / sr
     out = np.zeros_like(seg)
     for band, x in _split_bands(seg, sr).items():
         points = d.automation[band]
@@ -228,6 +333,12 @@ def _deck_signal(d: Deck, audio: np.ndarray, sr: int) -> tuple[int, np.ndarray]:
             out += x * np.interp(times, ts, gs)
         else:
             out += x
+    if d.filters:
+        out = _apply_filters(out, times, d.filters, sr)
+    if d.echo:
+        start, tail = _echo_tail(seg, times[0], d.echo, sr)
+        end = min(start + tail.shape[1], n)
+        out[:, start:end] += tail[:, : end - start]
     return int(round((d.offset + d.play_from) * sr)), out
 
 
@@ -249,11 +360,15 @@ def _nudge(w: TransitionWindow, out_audio: np.ndarray, in_audio: np.ndarray, sr:
     """Closed-loop nudge: measure both decks' kicks over the overlap and line them up, like
     nudging a platter. Falls back to the analysis' estimate when either side has too few kicks."""
     tr = w.transition
-    a_bars = (tr.out_bar, tr.out_bar + tr.overlap_bars)
-    b_bars = (tr.in_bar, tr.in_bar + tr.overlap_bars)
-    off_a, conf_a = _measured_offset_ms(w.out_deck, out_audio, *a_bars, sr)
-    off_b, conf_b = _measured_offset_ms(w.in_deck, in_audio, *b_bars, sr)
-    if min(conf_a, conf_b) >= MIN_CONFIDENCE:
+    if tr.overlap_bars:
+        a_bars = (tr.out_bar, tr.out_bar + tr.overlap_bars)
+        b_bars = (tr.in_bar, tr.in_bar + tr.overlap_bars)
+    else:  # a cut: keep the groove continuous across it
+        a_bars = (max(0, tr.out_bar - CUT_ALIGN_BARS), tr.out_bar)
+        b_bars = (tr.in_bar, min(w.in_deck.analysis.n_bars, tr.in_bar + CUT_ALIGN_BARS))
+    off_a, ok_a = _measured_offset_ms(w.out_deck, out_audio, *a_bars, sr)
+    off_b, ok_b = _measured_offset_ms(w.in_deck, in_audio, *b_bars, sr)
+    if ok_a and ok_b:
         w.nudge_ms, w.nudge_source = off_a - off_b, "measured"
     else:
         w.nudge_ms = _analysis_offset_ms(w.out_deck, *a_bars) - _analysis_offset_ms(w.in_deck, *b_bars)
@@ -293,9 +408,10 @@ def render(plan: MixPlan) -> tuple[np.ndarray, list[Deck], list[TransitionWindow
             w = windows[i - 1]
             _nudge(w, prev_audio, audio, sr)
             _shift_from(decks, windows, i, w.nudge_ms / 1000)
-            w.out_audio = _capture(decks[i - 1], prev_audio, w, sr)
-            w.in_audio = _capture(d, audio, w, sr)
-            _bass_swap_blend(w.out_deck, d, w.start, w.end, w.swap)
+            if w.transition.overlap_bars:
+                w.out_audio = _capture(decks[i - 1], prev_audio, w, sr)
+                w.in_audio = _capture(d, audio, w, sr)
+            apply_transition(w)
             _add(mix, *_deck_signal(decks[i - 1], prev_audio, sr))  # its automation is now complete
         prev_audio = audio
     _add(mix, *_deck_signal(decks[-1], prev_audio, sr))

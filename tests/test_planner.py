@@ -42,3 +42,23 @@ def test_swap_lands_on_incoming_section_change():
     c = best_transition(a, b)
     assert (c.out_bar, c.in_bar, c.overlap) == (48, 0, 16)
     assert c.swap_bar == 4  # the build starts 4 bars in; closest 4-bar-aligned section change to halfway is 4
+
+
+def test_compatible_keys_prefer_a_blend(club_track):
+    c = best_transition(club_track(key="8A"), club_track(key="9A"))
+    assert c.kind == "bass_swap_blend"
+
+
+def test_clashing_keys_prefer_a_cut(club_track):
+    c = best_transition(club_track(key="8A"), club_track(key="2B"))
+    assert c.kind in ("echo_out", "drop_cut")
+    assert c.overlap == 0
+
+
+def test_drop_cut_goes_from_a_build_into_a_drop():
+    a = make_analysis([("intro", 0, 16, 0.4), ("drop", 16, 48, 0.9), ("build", 48, 56, 0.6),
+                       ("drop", 56, 88, 0.95), ("outro", 88, 96, 0.4)], key="8A")
+    b = make_analysis([("intro", 0, 16, 0.4), ("drop", 16, 48, 0.9), ("outro", 48, 64, 0.4)], key="3B")
+    cuts = [c for c in candidates(a, b) if c.kind == "drop_cut"]
+    assert cuts and all(a.section_at(c.out_bar).label == "drop" for c in cuts)
+    assert all(b.section_at(c.in_bar).label == "drop" for c in cuts)

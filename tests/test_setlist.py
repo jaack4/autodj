@@ -4,7 +4,8 @@ import numpy as np
 import pytest
 
 from autodj.models import PlanTrack
-from autodj.setlist import Entry, _held_karp, _path_cost, load_playlist, order_tracks, tempo_gap
+from autodj.planner import tempo_gap
+from autodj.setlist import Entry, _held_karp, _path_cost, load_playlist, order_tracks
 
 
 def test_tempo_gap_allows_half_and_double_time():

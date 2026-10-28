@@ -42,7 +42,7 @@ def analyze(
 
 def _warn_pair(a, b) -> None:
     from autodj.camelot import camelot_distance
-    from autodj.setlist import tempo_gap
+    from autodj.planner import tempo_gap
 
     name_a, name_b = Path(a.path).stem, Path(b.path).stem
     dist = camelot_distance(a.key, b.key)
@@ -72,9 +72,10 @@ def pair(
     out_bar: Annotated[int | None, typer.Option(help="Bar of A where the blend starts (default: planner)")] = None,
     in_bar: Annotated[int | None, typer.Option(help="Bar of B that lands on out_bar (default: planner)")] = None,
     overlap: Annotated[int | None, typer.Option(help="Blend length in bars (default: planner)")] = None,
+    kind: Annotated[str | None, typer.Option("--type", help="bass_swap_blend | filter_sweep | echo_out | drop_cut (default: planner picks)")] = None,
     output: Annotated[Path | None, typer.Option("-o", help="Plan file to write")] = None,
 ) -> None:
-    """Draft a two-track MixPlan (A into B with a bass-swap blend)."""
+    """Draft a two-track MixPlan; the planner picks the points and transition type unless you do."""
     from autodj.analysis import analyze_file
     from autodj.models import MixPlan, PlanTrack, Transition
     from autodj.planner import candidates
@@ -82,7 +83,9 @@ def pair(
 
     a, b = analyze_file(track_a), analyze_file(track_b)
     if out_bar is None and in_bar is None and overlap is None:
-        ranked = candidates(a, b)
+        ranked = candidates(a, b, kinds=(kind,) if kind else None)
+        if not ranked:
+            raise typer.BadParameter(f"no {kind} transition fits these tracks")
         for i, c in enumerate(ranked[:3]):
             typer.echo(f"{'*' if i == 0 else ' '} {c.score:+.2f}  {c.describe()}")
             for why in c.reasons:
@@ -90,12 +93,14 @@ def pair(
         transition = ranked[0].transition()
         transition.notes = [f"score {ranked[0].score:+.2f}"] + ranked[0].reasons
     else:
-        transition = Transition(out_bar=out_bar if out_bar is not None else a.n_bars - (overlap or 16),
-                                in_bar=in_bar or 0, overlap_bars=overlap or 16)
+        cut = kind in ("echo_out", "drop_cut")
+        length = 0 if cut else (overlap or 16)
+        transition = Transition(type=kind or "bass_swap_blend", in_bar=in_bar or 0, overlap_bars=length,
+                                out_bar=out_bar if out_bar is not None else a.n_bars - max(length, 4))
     plan = MixPlan(name=f"{track_a.stem} -- {track_b.stem}", bpm=bpm,
                    tracks=[PlanTrack(path=a.path), PlanTrack(path=b.path)], transitions=[transition])
     _warn_pair(a, b)
-    _write_plan(plan, output or OUTPUT_DIR / "plans" / f"{plan.name}.json")
+    _write_plan(plan, output or OUTPUT_DIR / "plans" / f"{plan.name}{'.' + kind if kind else ''}.json")
 
 
 @app.command(name="set")
@@ -118,8 +123,8 @@ def build_set(
         typer.echo(f"{k + 1:3d}. {Path(t.path).stem}  [{a.bpm:.1f} BPM, {key}]")
         if k < len(plan.transitions):
             tr = plan.transitions[k]
-            typer.echo(f"       -> {tr.overlap_bars}-bar blend: bar {tr.out_bar} into bar {tr.in_bar} "
-                       f"({tr.notes[0] if tr.notes else ''})")
+            how = f"{tr.overlap_bars}-bar {tr.type}" if tr.overlap_bars else tr.type
+            typer.echo(f"       -> {how}: bar {tr.out_bar} into bar {tr.in_bar} ({tr.notes[0] if tr.notes else ''})")
             _warn_pair(a.model_copy(update={"key": key}),
                        analyses[k + 1].model_copy(update={"key": plan.tracks[k + 1].key or analyses[k + 1].key}))
     _write_plan(plan, output or OUTPUT_DIR / "sets" / f"{plan.name}.json")
@@ -157,9 +162,16 @@ def render(
                                     "plays_at_bpm": round(d.target_bpm, 2)})
         typer.echo(f"{clock(start):>7}  {name}  ({d.native_bpm:.1f} BPM)")
     for w in windows:
+        kind = w.transition.type
+        if not w.transition.overlap_bars:
+            tracklist["transitions"].append({"type": kind, "at": round(w.start, 3), "nudge_ms": round(w.nudge_ms, 1),
+                                             "nudge_source": w.nudge_source})
+            typer.echo(f"         {kind} at {clock(w.start)}, nudge {w.nudge_ms:+.0f} ms ({w.nudge_source})")
+            continue
         (off_a, conf_a), (off_b, conf_b) = mix_alignment(plan, w)
         flam = abs(off_a - off_b)
-        tracklist["transitions"].append({"start": round(w.start, 3), "swap": round(w.swap, 3), "end": round(w.end, 3),
+        tracklist["transitions"].append({"type": kind, "start": round(w.start, 3), "swap": round(w.swap, 3),
+                                         "end": round(w.end, 3),
                                          "bpm": round(60 / w.beat, 2), "nudge_ms": round(w.nudge_ms, 1),
                                          "nudge_source": w.nudge_source, "out_offset_ms": round(off_a, 1),
                                          "in_offset_ms": round(off_b, 1), "confidence": [round(conf_a, 2), round(conf_b, 2)]})
@@ -167,7 +179,7 @@ def render(
             verdict = "can't tell (too few kicks in the overlap), listen to it"
         else:
             verdict = "tight" if flam <= 10 else "audible flam" if flam > 20 else "borderline"
-        typer.echo(f"         blend {clock(w.start)}-{clock(w.end)} at {60 / w.beat:.1f} BPM, bass swap {clock(w.swap)}, "
+        typer.echo(f"         {kind} {clock(w.start)}-{clock(w.end)} at {60 / w.beat:.1f} BPM, bass swap {clock(w.swap)}, "
                    f"nudge {w.nudge_ms:+.0f} ms ({w.nudge_source}): kicks {flam:.1f} ms apart "
                    f"(confidence {conf_a:.1f}/{conf_b:.1f}), {verdict}")
     output.with_suffix(".tracklist.json").write_text(json.dumps(tracklist, indent=2))

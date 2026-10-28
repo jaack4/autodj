@@ -10,7 +10,7 @@ import yaml
 from autodj.analysis import analyze_file
 from autodj.camelot import camelot_distance, parse_key
 from autodj.models import Analysis, MixPlan, PlanTrack
-from autodj.planner import Candidate, best_transition
+from autodj.planner import Candidate, best_transition, tempo_gap
 
 AUDIO_EXTENSIONS = {".mp3", ".wav", ".flac", ".aiff", ".aif", ".m4a", ".ogg"}
 MIN_SOLO_BARS = 8  # a track plays alone at least this long between its two blends
@@ -53,11 +53,6 @@ def analyze_entries(tracks: list[PlanTrack]) -> list[Entry]:
             a = a.model_copy(update={"key": t.key, "key_confidence": 1.0})
         entries.append(Entry(track=t.model_copy(update={"path": a.path}), analysis=a))
     return entries
-
-
-def tempo_gap(a: float, b: float) -> float:
-    """Relative tempo difference (symmetric, log ratio), allowing half/double time (87 vs 174 is 0)."""
-    return float(min(abs(np.log(b * f / a)) for f in (0.5, 1.0, 2.0)))
 
 
 def pair_cost(a: Analysis, b: Analysis, transition: Candidate, arc: str) -> float:
