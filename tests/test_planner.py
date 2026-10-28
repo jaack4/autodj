@@ -62,3 +62,31 @@ def test_drop_cut_goes_from_a_build_into_a_drop():
     cuts = [c for c in candidates(a, b) if c.kind == "drop_cut"]
     assert cuts and all(a.section_at(c.out_bar).label == "drop" for c in cuts)
     assert all(b.section_at(c.in_bar).label == "drop" for c in cuts)
+
+
+def _vocals(n, on):
+    v = [0.0] * n
+    for s, e in on:
+        v[s:e] = [1.0] * (e - s)
+    return v
+
+
+def test_blends_avoid_two_vocals_at_once(club_track):
+    a = club_track(vocals=_vocals(112, [(96, 112)]))  # A sings through its outro
+    b_quiet = club_track(vocals=_vocals(112, [(16, 48)]))
+    b_singing = club_track(vocals=_vocals(112, [(0, 16)]))  # B sings over its intro
+    quiet = best_transition(a, b_quiet, kinds=("bass_swap_blend",))
+    singing = best_transition(a, b_singing, kinds=("bass_swap_blend",))
+    assert singing.score < quiet.score
+    assert not any("vocals at once" in r for r in quiet.reasons)
+
+
+def test_acapella_overlay_needs_stems_and_compatible_keys(club_track):
+    v = _vocals(112, [(0, 16)])
+    assert not candidates(club_track(), club_track(), kinds=("acapella_overlay",))
+    assert not candidates(club_track(vocals=v), club_track(key="3B", vocals=v), kinds=("acapella_overlay",))
+    found = candidates(club_track(vocals=v), club_track(vocals=v), kinds=("acapella_overlay",))
+    assert found
+    best = found[0]
+    assert best.in_bar + best.overlap == 16  # B's vocal phrase ends where its drop comes in
+    assert any("drop" in r for r in best.reasons)

@@ -10,6 +10,7 @@ authors = [
 requires-python = ">=3.12,<3.13"
 dependencies = [
     "beat-this>=1.1.0",
+    "demucs>=4.0.1",
     "librosa>=1.0.0",
     "matplotlib>=3.11.2",
     "numpy>=2.5.4",

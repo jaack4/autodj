@@ -45,10 +45,10 @@ def load_playlist(source: Path) -> tuple[str, list[PlanTrack], dict]:
     raise ValueError(f"Not a playlist or folder: {source}")
 
 
-def analyze_entries(tracks: list[PlanTrack]) -> list[Entry]:
+def analyze_entries(tracks: list[PlanTrack], stems: bool = False) -> list[Entry]:
     entries = []
     for t in tracks:
-        a = analyze_file(Path(t.path), bpm_hint=t.bpm_hint)
+        a = analyze_file(Path(t.path), bpm_hint=t.bpm_hint, stems=stems)
         if t.key:  # the user's key beats detection
             a = a.model_copy(update={"key": t.key, "key_confidence": 1.0})
         entries.append(Entry(track=t.model_copy(update={"path": a.path}), analysis=a))
@@ -123,7 +123,9 @@ def order_tracks(entries: list[Entry], arc: str) -> tuple[list[int], dict[tuple[
     return order, transitions
 
 
-def build_plan(source: Path, keep_order: bool | None = None, arc: str | None = None, bpm: float | None = None) -> MixPlan:
+def build_plan(
+    source: Path, keep_order: bool | None = None, arc: str | None = None, bpm: float | None = None, stems: bool = False
+) -> MixPlan:
     name, tracks, options = load_playlist(source)
     if len(tracks) < 2:
         raise ValueError("A set needs at least two tracks")
@@ -131,7 +133,7 @@ def build_plan(source: Path, keep_order: bool | None = None, arc: str | None = N
     arc = arc or options.get("energy_arc", "warmup_peak")
     if arc not in ARCS:
         arc = "flat"
-    entries = analyze_entries(tracks)
+    entries = analyze_entries(tracks, stems=stems)
     if keep_order:
         order = list(range(len(entries)))
         transitions = {(i, i + 1): best_transition(entries[i].analysis, entries[i + 1].analysis)

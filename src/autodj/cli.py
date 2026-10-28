@@ -18,13 +18,14 @@ def analyze(
     bpm: Annotated[float | None, typer.Option(help="Known BPM, resolves half/double time")] = None,
     report: Annotated[bool, typer.Option(help="Write clicks.wav and analysis.png to output/")] = True,
     force: Annotated[bool, typer.Option(help="Ignore the analysis cache")] = False,
+    stems: Annotated[bool, typer.Option(help="Also separate stems (Demucs) and measure vocals per bar")] = False,
 ) -> None:
     """Analyze tracks: beat grid, key, loudness, phrase-aligned sections."""
     from autodj.analysis import analyze_file
     from autodj.report import report_dir, write_clicks, write_plot
 
     for path in paths:
-        a = analyze_file(path, backend=backend, bpm_hint=bpm, force=force)
+        a = analyze_file(path, backend=backend, bpm_hint=bpm, force=force, stems=stems)
         grid = "ok" if a.grid_ok else "DRIFTING (tempo not constant or BPM off)"
         typer.secho(f"\n{path.name}", bold=True)
         typer.echo(f"  {a.bpm} BPM  {a.key} ({a.key_name}, conf {a.key_confidence})  {a.lufs} LUFS  "
@@ -32,7 +33,10 @@ def analyze(
         typer.echo(f"  grid: {grid} (drift {a.grid_drift_ms:+} ms, onset offset {a.onset_offset_ms:+} ms), "
                    f"{len(a.downbeats)} bars")
         for s in a.sections:
-            typer.echo(f"    {s.start:7.1f}s  bar {s.start_bar:3d}-{s.end_bar:<3d} {s.label:<6} energy {s.energy:.2f}")
+            vocals = ""
+            if a.bar_vocals is not None:
+                vocals = f"  vocals {sum(v > 0.5 for v in a.bar_vocals[s.start_bar:s.end_bar]) / (s.end_bar - s.start_bar):.0%}"
+            typer.echo(f"    {s.start:7.1f}s  bar {s.start_bar:3d}-{s.end_bar:<3d} {s.label:<6} energy {s.energy:.2f}{vocals}")
         if report:
             out = report_dir(a)
             write_clicks(a, out)
@@ -72,7 +76,8 @@ def pair(
     out_bar: Annotated[int | None, typer.Option(help="Bar of A where the blend starts (default: planner)")] = None,
     in_bar: Annotated[int | None, typer.Option(help="Bar of B that lands on out_bar (default: planner)")] = None,
     overlap: Annotated[int | None, typer.Option(help="Blend length in bars (default: planner)")] = None,
-    kind: Annotated[str | None, typer.Option("--type", help="bass_swap_blend | filter_sweep | echo_out | drop_cut (default: planner picks)")] = None,
+    kind: Annotated[str | None, typer.Option("--type", help="bass_swap_blend | filter_sweep | echo_out | drop_cut | acapella_overlay (default: planner picks)")] = None,
+    stems: Annotated[bool, typer.Option(help="Separate stems: avoids vocal clashes, enables acapella_overlay")] = False,
     output: Annotated[Path | None, typer.Option("-o", help="Plan file to write")] = None,
 ) -> None:
     """Draft a two-track MixPlan; the planner picks the points and transition type unless you do."""
@@ -81,7 +86,7 @@ def pair(
     from autodj.planner import candidates
     from autodj.report import OUTPUT_DIR
 
-    a, b = analyze_file(track_a), analyze_file(track_b)
+    a, b = analyze_file(track_a, stems=stems), analyze_file(track_b, stems=stems)
     if out_bar is None and in_bar is None and overlap is None:
         ranked = candidates(a, b, kinds=(kind,) if kind else None)
         if not ranked:
@@ -109,6 +114,7 @@ def build_set(
     keep_order: Annotated[bool | None, typer.Option("--keep-order/--reorder", help="Keep the playlist order")] = None,
     arc: Annotated[str | None, typer.Option(help="warmup_peak (tempo rises) | flat")] = None,
     bpm: Annotated[float | None, typer.Option(help="Lock every track to this tempo")] = None,
+    stems: Annotated[bool, typer.Option(help="Separate stems: avoids vocal clashes, enables acapella_overlay")] = False,
     output: Annotated[Path | None, typer.Option("-o", help="Plan file to write")] = None,
 ) -> None:
     """Plan a whole set: analyze, order by key/tempo/transition quality, plan every blend."""
@@ -116,7 +122,7 @@ def build_set(
     from autodj.report import OUTPUT_DIR
     from autodj.setlist import build_plan
 
-    plan = build_plan(source, keep_order=keep_order, arc=arc, bpm=bpm)
+    plan = build_plan(source, keep_order=keep_order, arc=arc, bpm=bpm, stems=stems)
     analyses = [analyze_file(Path(t.path), bpm_hint=t.bpm_hint) for t in plan.tracks]
     for k, (t, a) in enumerate(zip(plan.tracks, analyses)):
         key = t.key or a.key
@@ -179,7 +185,10 @@ def render(
             verdict = "can't tell (too few kicks in the overlap), listen to it"
         else:
             verdict = "tight" if flam <= 10 else "audible flam" if flam > 20 else "borderline"
-        typer.echo(f"         {kind} {clock(w.start)}-{clock(w.end)} at {60 / w.beat:.1f} BPM, bass swap {clock(w.swap)}, "
+        if kind == "acapella_overlay":
+            verdict += " (beats don't overlap in an acapella overlay; this is the vocal's timing)"
+        swap = f"bass swap {clock(w.swap)}, " if kind in ("bass_swap_blend", "filter_sweep") else ""
+        typer.echo(f"         {kind} {clock(w.start)}-{clock(w.end)} at {60 / w.beat:.1f} BPM, {swap}"
                    f"nudge {w.nudge_ms:+.0f} ms ({w.nudge_source}): kicks {flam:.1f} ms apart "
                    f"(confidence {conf_a:.1f}/{conf_b:.1f}), {verdict}")
     output.with_suffix(".tracklist.json").write_text(json.dumps(tracklist, indent=2))

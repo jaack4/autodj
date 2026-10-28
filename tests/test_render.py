@@ -167,3 +167,24 @@ def test_overlap_must_match_transition_type(club_track):
     plan = _plan([Transition(type="echo_out", out_bar=64, in_bar=16, overlap_bars=16)])
     with pytest.raises(ValueError, match="overlap_bars"):
         place(plan, _decks(plan, [club_track(), club_track()]))
+
+
+def test_acapella_overlay_mixes_stems(club_track):
+    from autodj.models import Transition
+    from autodj.render import _deck_signal, apply_transition, place
+
+    plan = _plan([Transition(type="acapella_overlay", out_bar=64, in_bar=0, overlap_bars=16)])
+    da, db = _decks(plan, [club_track(bpm=120.0), club_track(bpm=120.0)])
+    (w,) = place(plan, [da, db])
+    apply_transition(w)
+    sr = 8000
+    n = int(300 * sr)
+    full, vocals = np.ones((2, n), np.float32), np.full((2, n), 0.25, np.float32)  # instrumental = 0.75
+    ma, sa = _deck_signal(da, full, sr, vocals)
+    mb, sb = _deck_signal(db, full, sr, vocals)
+    at = lambda m0, sig, t: sig[0, int(t * sr) - m0]
+    mid = (w.start + w.end) / 2
+    assert at(ma, sa, mid) == pytest.approx(0.75, abs=0.02)  # A: instrumental only
+    assert at(mb, sb, mid) == pytest.approx(0.25, abs=0.02)  # B: acapella only
+    assert at(mb, sb, w.end + 1) == pytest.approx(1.0, abs=0.02)  # then B in full
+    assert da.offset + da.play_to <= w.end + 0.01  # and A is gone

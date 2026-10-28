@@ -18,6 +18,9 @@ SPLICE_TOLERANCE_MS = 25.0
 
 BLENDS = ("bass_swap_blend", "filter_sweep")
 CUTS = ("echo_out", "drop_cut")
+OVERLAYS = ("acapella_overlay",)
+VOCAL_ON = 0.5  # bar_vocals above this counts as singing/rapping
+ACAPELLA_LENGTHS = (8, 16)
 
 
 @dataclass
@@ -37,6 +40,8 @@ class Candidate:
     def describe(self) -> str:
         if self.kind in CUTS:
             return f"{self.kind}: A bar {self.out_bar} -> B bar {self.in_bar}"
+        if self.kind in OVERLAYS:
+            return f"{self.kind}: B's vocal from bar {self.in_bar} over A bar {self.out_bar}, {self.overlap} bars"
         return f"{self.kind}: A bar {self.out_bar} = B bar {self.in_bar}, {self.overlap} bars, swap at +{self.swap_bar}"
 
 
@@ -55,6 +60,8 @@ def stable_offsets_ms(a: Analysis) -> np.ndarray:
     A single off window (a syncopated kick pattern) disappears; a splice or tempo change
     persists as a step. Bars with too few confident neighbours fall back to the track median.
     """
+    if "stable_offsets" in a._memo:
+        return a._memo["stable_offsets"]
     offs = np.array(a.bar_offset_ms)
     good = np.array(a.bar_offset_confidence) >= MIN_CONFIDENCE
     half = STABLE_WINDOW_BARS // 2
@@ -64,6 +71,7 @@ def stable_offsets_ms(a: Analysis) -> np.ndarray:
         vals = offs[lo:hi][good[lo:hi]]
         if len(vals) >= MIN_STABLE_BARS:
             out[k] = np.median(vals)
+    a._memo["stable_offsets"] = out
     return out
 
 
@@ -133,6 +141,11 @@ def score(a: Analysis, b: Analysis, c: Candidate, preferred_overlap: int) -> Can
             add(0.5, "blend ends on a B section change")
             if b.section_at(b_end).label == "drop":
                 add(0.3, "blend lands on B's drop")
+        if a.bar_vocals is not None and b.bar_vocals is not None:
+            va = np.array(a.bar_vocals[c.out_bar : a_end]) > VOCAL_ON
+            vb = np.array(b.bar_vocals[c.in_bar : b_end]) > VOCAL_ON
+            both = float((va & vb).mean())
+            add(-1.5 * both * (0.6 if c.kind == "filter_sweep" else 1.0), "both tracks have vocals at once")
         for name, x, start, end in (("A", a, c.out_bar, a_end), ("B", b, c.in_bar, b_end)):
             if not region_offset_ms(x, start, end)[1]:
                 add(-2.0, f"{name}'s grid jumps inside the blend (splice/tempo change)")
@@ -148,6 +161,18 @@ def score(a: Analysis, b: Analysis, c: Candidate, preferred_overlap: int) -> Can
             add(-0.1, "filter sweep (plain blend preferred when equal)")
             if key_distance(a, b) >= 2:
                 add(0.3, "filters hide the key clash")
+    elif c.kind == "acapella_overlay":
+        add(0.2, "B's vocal over A's instrumental")
+        vb = np.array(b.bar_vocals[c.in_bar : b_end])
+        add(0.5 * float((vb > VOCAL_ON).mean()) - 0.5, f"B sings in {(vb > VOCAL_ON).mean():.0%} of the overlay")
+        if b_end in b.section_starts():
+            add(0.4, "B's beat comes in on a section change")
+            if b.section_at(b_end).label == "drop":
+                add(0.4, "B's beat comes in on its drop")
+        a_labels = [a.section_at(k).label for k in range(c.out_bar, a_end)]
+        add(-0.5 * a_labels.count("break") / c.overlap, "A's instrumental is a breakdown (little beat to sing over)")
+        if not region_offset_ms(a, c.out_bar, a_end)[1]:
+            add(-2.0, "A's grid jumps under the overlay (splice/tempo change)")
     elif c.kind == "echo_out":
         add(-0.4, "echo out (a blend is smoother when it works)")
         if clash or far_tempo:
@@ -203,9 +228,27 @@ def _cut_candidates(a: Analysis, b: Analysis, min_out_bar: int) -> list[Candidat
     return found
 
 
+def _overlay_candidates(a: Analysis, b: Analysis, min_out_bar: int) -> list[Candidate]:
+    """B's acapella over A's instrumental, then B's beat comes in. Needs stems and compatible keys."""
+    if a.bar_vocals is None or b.bar_vocals is None or key_distance(a, b) > 1:
+        return []
+    found = []
+    lines = {s.start_bar + 4 * k for s in a.sections for k in range(max(1, (s.end_bar - s.start_bar) // 4))}
+    for length in ACAPELLA_LENGTHS:
+        outs = {o for o in lines if o + length <= a.n_bars and o >= max(a.n_bars // 3, min_out_bar)}
+        # Vocal phrases of B that end where B's beat can take over (a section change).
+        ins = {e - length for e in b.section_starts() if 0 <= e - length and e <= 0.7 * b.n_bars}
+        ins = {i for i in ins if np.mean(np.array(b.bar_vocals[i : i + length]) > VOCAL_ON) >= 0.5}
+        for o in outs:
+            for i in ins:
+                found.append(score(a, b, Candidate(o, i, length, None, kind="acapella_overlay"), 0))
+    return found
+
+
 def candidates(a: Analysis, b: Analysis, min_out_bar: int = 0, kinds: tuple[str, ...] | None = None) -> list[Candidate]:
     """All phrase-aligned candidates, best first. min_out_bar keeps A's previous blend clear."""
-    found = _blend_candidates(a, b, min_out_bar) + _cut_candidates(a, b, min_out_bar)
+    found = (_blend_candidates(a, b, min_out_bar) + _cut_candidates(a, b, min_out_bar)
+             + _overlay_candidates(a, b, min_out_bar))
     if kinds:
         found = [c for c in found if c.kind in kinds]
     return sorted(found, key=lambda c: c.score, reverse=True)

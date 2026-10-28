@@ -1,6 +1,6 @@
 from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, PrivateAttr
 
 
 class Section(BaseModel):
@@ -37,6 +37,12 @@ class Analysis(BaseModel):
     bar_offset_ms: list[float]  # local kick-vs-grid offset; jumps mark splices or tempo changes
     bar_offset_confidence: list[float]  # < 1.5: too few kicks to measure
     sections: list[Section]
+    bar_vocals: list[float] | None = None  # 0..1 vocal presence per bar, once stems are separated
+    _memo: dict = PrivateAttr(default_factory=dict)  # derived values cached by the planner
+
+    @property
+    def has_vocals_data(self) -> bool:
+        return self.bar_vocals is not None
 
     @property
     def n_bars(self) -> int:
@@ -63,7 +69,7 @@ class PlanTrack(BaseModel):
 
 
 class Transition(BaseModel):
-    type: Literal["bass_swap_blend", "filter_sweep", "echo_out", "drop_cut"] = "bass_swap_blend"
+    type: Literal["bass_swap_blend", "filter_sweep", "echo_out", "drop_cut", "acapella_overlay"] = "bass_swap_blend"
     out_bar: int  # bar of the outgoing track where the overlap (or cut) starts
     in_bar: int = 0  # bar of the incoming track that lands on out_bar
     overlap_bars: int = 16  # 0 for echo_out / drop_cut

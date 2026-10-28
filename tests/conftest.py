@@ -11,6 +11,7 @@ def make_analysis(
     path: str = "/music/track.mp3",
     offsets_ms: list[float] | None = None,
     key_confidence: float = 0.2,
+    vocals: list[float] | None = None,
 ) -> Analysis:
     """A fake analysis: sections as (label, start_bar, end_bar, energy)."""
     n = sections[-1][2]
@@ -25,7 +26,7 @@ def make_analysis(
         onset_offset_ms=0.0, grid_drift_ms=0.0, grid_ok=True,
         key=key, key_name="", key_confidence=key_confidence, lufs=-8.0,
         bar_energy=energy.tolist(), bar_novelty=[0.0] * n,
-        bar_offset_ms=offsets_ms or [0.0] * n, bar_offset_confidence=[3.0] * n,
+        bar_offset_ms=offsets_ms or [0.0] * n, bar_offset_confidence=[3.0] * n, bar_vocals=vocals,
         sections=[Section(label=l, start_bar=s, end_bar=e, start=downbeats[s], end=downbeats[e - 1] + bar, energy=en)
                   for l, s, e, en in sections],
     )

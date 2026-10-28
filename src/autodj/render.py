@@ -51,6 +51,7 @@ class Deck:
     play_to: float = 0.0
     automation: dict[str, Breakpoints] = field(default_factory=lambda: {b: [] for b in BANDS})
     filters: list[tuple[str, Breakpoints]] = field(default_factory=list)  # ("highpass"|"lowpass", (mix t, Hz))
+    stem_gains: dict[str, Breakpoints] = field(default_factory=dict)  # "vocals" / "instrumental" -> gains
     echo: "Echo | None" = None
     _map_in: np.ndarray = field(default_factory=lambda: np.zeros(0))
     _map_out: np.ndarray = field(default_factory=lambda: np.zeros(0))
@@ -88,8 +89,9 @@ class Deck:
         """Track-local output time of a bar start."""
         return self.to_out(self.bar_input_time(bar))
 
-    def load_stretched(self, sr: int) -> np.ndarray:
-        audio, _ = librosa.load(self.analysis.path, sr=sr, mono=False)
+    def load_stretched(self, sr: int, source: str | None = None) -> np.ndarray:
+        """The deck's audio (or one of its stems), time-stretched along its tempo curve."""
+        audio, _ = librosa.load(source or self.analysis.path, sr=sr, mono=False)
         audio = np.atleast_2d(audio).astype(np.float32)
         if audio.shape[0] == 1:
             audio = np.repeat(audio, 2, axis=0)
@@ -165,6 +167,14 @@ def _cut(out: Deck, inc: Deck, t: float) -> None:
         inc.automation[band] += [(t - CUT_FADE_S, 0.0), (t, 1.0)]
 
 
+def _acapella_overlay(out: Deck, inc: Deck, t0: float, t1: float, beat: float) -> None:
+    """A's vocals duck as B's acapella starts over A's instrumental; at t1 B's beat replaces A's."""
+    out.stem_gains.setdefault("vocals", []).extend([(t0 - beat, 1.0), (t0, 0.0)])
+    inc.stem_gains.setdefault("instrumental", []).extend([(t1 - CUT_FADE_S, 0.0), (t1, 1.0)])
+    for band in BANDS:
+        out.automation[band] += [(t1 - CUT_FADE_S, 1.0), (t1, 0.0)]
+
+
 def apply_transition(w: "TransitionWindow") -> None:
     """Write the automation for one transition onto its two decks."""
     tr, a, b = w.transition, w.out_deck, w.in_deck
@@ -179,6 +189,8 @@ def apply_transition(w: "TransitionWindow") -> None:
         a.echo = Echo(cut=w.start, beat=w.beat, delay_beats=tr.echo_delay_beats, feedback=tr.echo_feedback)
     elif tr.type == "drop_cut":
         _cut(a, b, w.start)
+    elif tr.type == "acapella_overlay":
+        _acapella_overlay(a, b, w.start, w.end, w.beat)
     else:
         raise ValueError(f"Unknown transition type: {tr.type}")
 
@@ -310,21 +322,33 @@ def place(plan: MixPlan, decks: list[Deck]) -> list[TransitionWindow]:
         a.play_to = t1 - a.offset
         if tr.type == "echo_out":
             a.play_to += Echo(t0, bar / 4, tr.echo_delay_beats, tr.echo_feedback).tail + bar / 4
-        elif tr.type == "drop_cut":
+        elif tr.type in ("drop_cut", "acapella_overlay"):
             a.play_to += CUT_FADE_S
         windows.append(TransitionWindow(tr, t0, ts, t1, bar / 4, a, b))
     decks[-1].play_to = decks[-1].to_out(decks[-1].analysis.duration)
     return windows
 
 
-def _deck_signal(d: Deck, audio: np.ndarray, sr: int) -> tuple[int, np.ndarray]:
+def _segment(audio: np.ndarray, s0: int, n: int, gain: float) -> np.ndarray:
+    seg = np.zeros((2, n), np.float32)
+    part = audio[:, s0 : s0 + n]
+    seg[:, : part.shape[1]] = part * gain  # zero-padded if an echo tail runs past the audio
+    return seg
+
+
+def _deck_signal(d: Deck, audio: np.ndarray, sr: int, vocals: np.ndarray | None = None) -> tuple[int, np.ndarray]:
     """(mix start sample, automated audio) for the part of the deck that plays."""
     s0 = int(round(d.play_from * sr))
-    s1 = min(int(round(d.play_to * sr)), audio.shape[1])
     n = int(round(d.play_to * sr)) - s0
-    seg = np.zeros((2, n), np.float32)
-    seg[:, : s1 - s0] = audio[:, s0:s1] * d.gain  # zero-padded if an echo tail runs past the audio
+    seg = _segment(audio, s0, n, d.gain)
     times = d.offset + np.arange(s0, s0 + n) / sr
+    if vocals is not None:
+        voc = _segment(vocals, s0, n, d.gain)
+        gain = {}
+        for stem in ("vocals", "instrumental"):
+            points = d.stem_gains.get(stem)
+            gain[stem] = np.interp(times, *zip(*points)) if points else 1.0
+        seg = gain["instrumental"] * (seg - voc) + gain["vocals"] * voc
     out = np.zeros_like(seg)
     for band, x in _split_bands(seg, sr).items():
         points = d.automation[band]
@@ -401,9 +425,16 @@ def render(plan: MixPlan) -> tuple[np.ndarray, list[Deck], list[TransitionWindow
     windows = place(plan, decks)
     end = max(d.offset + d.play_to for d in decks)
     mix = np.zeros((2, int(np.ceil(end * sr)) + 1 + sr), np.float32)  # +1 s of room for nudges
+    overlay = [t.type == "acapella_overlay" for t in plan.transitions]
+    needs_vocals = [(i > 0 and overlay[i - 1]) or (i < len(overlay) and overlay[i]) for i in range(len(decks))]
+    vocals: list[np.ndarray | None] = [None] * len(decks)
     prev_audio = None
     for i, d in enumerate(decks):  # one deck (plus the previous one) in memory at a time
         audio = d.load_stretched(sr)
+        if needs_vocals[i]:
+            from autodj.stems import separate
+
+            vocals[i] = d.load_stretched(sr, source=str(separate(d.analysis.path, d.analysis.sha256)["vocals"]))
         if i > 0:
             w = windows[i - 1]
             _nudge(w, prev_audio, audio, sr)
@@ -412,9 +443,10 @@ def render(plan: MixPlan) -> tuple[np.ndarray, list[Deck], list[TransitionWindow
                 w.out_audio = _capture(decks[i - 1], prev_audio, w, sr)
                 w.in_audio = _capture(d, audio, w, sr)
             apply_transition(w)
-            _add(mix, *_deck_signal(decks[i - 1], prev_audio, sr))  # its automation is now complete
+            _add(mix, *_deck_signal(decks[i - 1], prev_audio, sr, vocals[i - 1]))  # its automation is complete
+            vocals[i - 1] = None
         prev_audio = audio
-    _add(mix, *_deck_signal(decks[-1], prev_audio, sr))
+    _add(mix, *_deck_signal(decks[-1], prev_audio, sr, vocals[-1]))
     mix = mix[:, : int(np.ceil(max(d.offset + d.play_to for d in decks) * sr)) + 1]
     # JUCE's limiter treats the threshold as input gain and limits to 0 dBFS, so lower the
     # output afterwards to leave headroom for inter-sample peaks and lossy encoding.

@@ -75,8 +75,20 @@ def _analyze(path: Path, sha: str, backend: str, bpm_hint: float | None) -> Anal
 
 
 def analyze_file(
-    path: Path, backend: str = "auto", bpm_hint: float | None = None, force: bool = False
+    path: Path, backend: str = "auto", bpm_hint: float | None = None, force: bool = False, stems: bool = False
 ) -> Analysis:
+    """Analyze a track (cached). stems=True also separates it with Demucs and adds per-bar vocal activity."""
+    a = _analyze_cached(path, backend, bpm_hint, force)
+    if stems and a.bar_vocals is None:
+        from autodj.stems import bar_vocal_activity, separate
+
+        paths = separate(a.path, a.sha256)
+        a = a.model_copy(update={"bar_vocals": bar_vocal_activity(paths["vocals"], a.path, a.downbeats)})
+        _cache_path(a.sha256, a.beat_backend, bpm_hint).write_text(a.model_dump_json(indent=1))
+    return a
+
+
+def _analyze_cached(path: Path, backend: str, bpm_hint: float | None, force: bool) -> Analysis:
     """Analyze a track. backend='auto' prefers beat_this downbeats (if its weights are downloaded), else heuristic.
 
     Pass backend='beat_this' explicitly to trigger the weights download.
