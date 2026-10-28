@@ -10,6 +10,7 @@ class Section(BaseModel):
     start: float  # seconds
     end: float
     energy: float  # 0..1, relative to the track
+    group: str | None = None  # sections sharing a letter repeat each other (e.g. drop 1 and drop 2)
 
 
 class Analysis(BaseModel):
@@ -38,6 +39,8 @@ class Analysis(BaseModel):
     bar_offset_confidence: list[float]  # < 1.5: too few kicks to measure
     sections: list[Section]
     bar_vocals: list[float] | None = None  # 0..1 vocal presence per bar, once stems are separated
+    sections_source: str = "mix"  # "stems" once sections are re-detected from separated stems
+    sections_mix: list[Section] | None = None  # the mix-only sections, kept for comparison
     _memo: dict = PrivateAttr(default_factory=dict)  # derived values cached by the planner
 
     @property

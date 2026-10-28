@@ -309,8 +309,9 @@ def label(
 def eval_sections(
     labels_dir: Annotated[Path, typer.Argument(help="Folder of label files from `autodj label`")] = Path("labels"),
     tolerance: Annotated[float, typer.Option(help="Boundary tolerance in bars")] = 1.0,
+    stems: Annotated[bool, typer.Option(help="Also score stem-based sections (separates stems if needed)")] = True,
 ) -> None:
-    """Score the section detector against your hand labels."""
+    """Score the section detectors (mix-only and stem-based) against your hand labels."""
     import json
 
     from autodj.analysis import analyze_file
@@ -319,21 +320,31 @@ def eval_sections(
     files = sorted(labels_dir.glob("*.json"))
     if not files:
         raise typer.BadParameter(f"no label files in {labels_dir}/ (make some with `autodj label`)")
-    scores = []
-    typer.echo(f"{'track':40s} {'boundaries P / R / F1':>24s} {'labels':>8s}")
+    by_method: dict[str, list] = {"mix": [], "stems": []}
+    typer.echo(f"{'track':36s} {'method':7s} {'boundaries P / R / F1':>22s} {'labels':>7s}")
     for f in files:
         data = json.loads(f.read_text())
         if not data["sections"] or not Path(data["path"]).exists():
             continue
-        a = analyze_file(Path(data["path"]))
-        s = score_track(a, data["sections"], Path(data["path"]).stem, tolerance)
-        scores.append(s)
-        typer.echo(f"{s.name[:40]:40s} {s.precision:6.0%} / {s.recall:4.0%} / {s.f1:4.0%} {s.label_accuracy:8.0%}")
-    if not scores:
+        a = analyze_file(Path(data["path"]), stems=stems)
+        variants = {"mix": a.sections_mix or a.sections}
+        if a.sections_source == "stems":
+            variants["stems"] = a.sections
+        for method, sections in variants.items():
+            s = score_track(a, data["sections"], Path(data["path"]).stem, tolerance, sections)
+            by_method[method].append(s)
+            typer.echo(f"{s.name[:36]:36s} {method:7s} {s.precision:5.0%} / {s.recall:4.0%} / {s.f1:4.0%} "
+                       f"{s.label_accuracy:7.0%}")
+    if not by_method["mix"]:
         raise typer.BadParameter("no usable label files")
-    total = summarize(scores)
-    typer.secho(f"{'ALL (' + str(len(scores)) + ' tracks)':40s} {total.precision:6.0%} / {total.recall:4.0%} / "
-                f"{total.f1:4.0%} {total.label_accuracy:8.0%}", bold=True)
-    typer.echo("\nmost common label mix-ups (your label -> detected, in bars):")
+    typer.echo("")
+    for method, scores in by_method.items():
+        if scores:
+            total = summarize(scores)
+            typer.secho(f"{'ALL (' + str(len(scores)) + ' tracks)':36s} {method:7s} {total.precision:5.0%} / "
+                        f"{total.recall:4.0%} / {total.f1:4.0%} {total.label_accuracy:7.0%}", bold=True)
+    total = summarize(by_method["stems"] or by_method["mix"])
+    typer.echo(f"\nmost common label mix-ups for {'stems' if by_method['stems'] else 'mix'} "
+               f"(your label -> detected, in bars):")
     for (t, p), n in sorted(((k, v) for k, v in total.confusion.items() if k[0] != k[1]), key=lambda kv: -kv[1])[:6]:
         typer.echo(f"  {t:>6s} -> {p:<6s} {n}")

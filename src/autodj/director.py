@@ -117,7 +117,8 @@ def _section_summary(a: Analysis) -> str:
         if a.bar_vocals is not None:
             share = sum(v > 0.5 for v in a.bar_vocals[s.start_bar : s.end_bar]) / (s.end_bar - s.start_bar)
             vocals = f", vocals {share:.0%}"
-        parts.append(f"{s.label} {s.start_bar}-{s.end_bar} (energy {s.energy:.2f}{vocals})")
+        repeat = f", repeat group {s.group}" if s.group else ""
+        parts.append(f"{s.label} {s.start_bar}-{s.end_bar} (energy {s.energy:.2f}{vocals}{repeat})")
     return " | ".join(parts)
 
 

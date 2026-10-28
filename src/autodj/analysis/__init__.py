@@ -80,11 +80,16 @@ def analyze_file(
 ) -> Analysis:
     """Analyze a track (cached). stems=True also separates it with Demucs and adds per-bar vocal activity."""
     a = _analyze_cached(path, backend, bpm_hint, force)
-    if stems and a.bar_vocals is None:
+    if stems and a.sections_source != "stems":
+        from autodj.analysis.stem_sections import sections_from_stems, stem_bar_features
         from autodj.stems import bar_vocal_activity, separate
 
         paths = separate(a.path, a.sha256)
-        a = a.model_copy(update={"bar_vocals": bar_vocal_activity(paths["vocals"], a.path, a.downbeats)})
+        vocals = bar_vocal_activity(paths["vocals"], a.path, a.downbeats)
+        a = a.model_copy(update={"bar_vocals": vocals})
+        features = stem_bar_features({k: str(v) for k, v in paths.items()}, a.path, a.downbeats)
+        a = a.model_copy(update={"sections": sections_from_stems(a, features), "sections_mix": a.sections,
+                                 "sections_source": "stems"})
         _cache_path(a.sha256, a.beat_backend, bpm_hint).write_text(a.model_dump_json(indent=1))
     return a
 

@@ -83,7 +83,16 @@ handle all timing and audio, and an invalid pick is replaced automatically. One
 request per set: about $0.04 for 3 tracks, roughly $0.10–0.50 for 20.
 `set --director` runs it straight after planning.
 
-**5. Tweak a plan by hand.** Edit the JSON (bars, overlap, transition type,
+**5. Teach it your sections (improves analysis)**
+```sh
+uv run autodj label ~/Music/new/        # opens a page in your browser: press 1-6 at each section start
+uv run autodj eval-sections             # scores both detectors (mix-only vs stem-based) against your labels
+```
+With `--stems`, sections are detected from the separated layers (kick, risers,
+vocals) and repeats are grouped ("drop 2 repeats drop 1"). Your labels in
+`labels/` (git-ignored) show whether that actually beats the mix-only method.
+
+**6. Tweak a plan by hand.** Edit the JSON (bars, overlap, transition type,
 `ramp_bars`, a track's `bpm`) and run `render` again.
 
 ## Playlist format

@@ -4,7 +4,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from autodj.models import Analysis
+from autodj.models import Analysis, Section
 
 
 @dataclass
@@ -50,15 +50,20 @@ def _label_at(sections: list[tuple[float, str]], t: float) -> str:
     return label
 
 
-def score_track(a: Analysis, truth: list[dict], name: str = "", tolerance_bars: float = 1.0) -> SectionScore:
-    """Boundaries: every section start except the track's first. Labels: compared at each bar's midpoint."""
+def score_track(a: Analysis, truth: list[dict], name: str = "", tolerance_bars: float = 1.0,
+                sections: list[Section] | None = None) -> SectionScore:
+    """Boundaries: every section start except the track's first. Labels: compared at each bar's midpoint.
+
+    Scores a.sections unless other sections (e.g. a.sections_mix) are given.
+    """
+    sections = a.sections if sections is None else sections
     bar = float(np.diff(a.downbeats).mean())
     first = a.downbeats[0] + bar / 2
-    pred_starts = [s.start for s in a.sections if s.start > first]
+    pred_starts = [s.start for s in sections if s.start > first]
     true_starts = [s["start"] for s in truth if s["start"] > first]
     hits = match_boundaries(pred_starts, true_starts, tolerance_bars * bar)
 
-    pred = [(s.start, s.label) for s in a.sections]
+    pred = [(s.start, s.label) for s in sections]
     true = sorted((s["start"], s["label"]) for s in truth)
     confusion: dict[tuple[str, str], int] = {}
     agree = 0
