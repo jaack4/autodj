@@ -9,6 +9,7 @@ import yaml
 
 from autodj.analysis import analyze_file
 from autodj.camelot import camelot_distance, parse_key, shift_key
+from autodj.mashups import find_mashups
 from autodj.models import Analysis, MixPlan, PlanTrack
 from autodj.planner import UNCERTAIN_KEY, Candidate, best_transition, candidates, min_out_after, tempo_gap
 
@@ -159,7 +160,7 @@ def order_tracks(entries: list[Entry], arc: str, max_shift: int = MAX_SHIFT,
 
 def build_plan(
     source: Path, keep_order: bool | None = None, arc: str | None = None, bpm: float | None = None,
-    stems: bool = False, log=print, max_shift: int = MAX_SHIFT, style: str = "smooth",
+    stems: bool = False, log=print, max_shift: int = MAX_SHIFT, style: str = "smooth", mashups: int = 2,
 ) -> MixPlan:
     name, tracks, options = load_playlist(source)
     keep_order = options.get("keep_order", False) if keep_order is None else keep_order
@@ -187,8 +188,10 @@ def build_plan(
         t = c.transition()
         t.notes = [f"score {c.score:+.2f}"] + c.reasons
         plan_transitions.append(t)
-    return MixPlan(name=name, bpm=bpm, style=style, tracks=[e.track for e, _ in shifted],
+    plan = MixPlan(name=name, bpm=bpm, style=style, tracks=[e.track for e, _ in shifted],
                    transitions=plan_transitions)
+    plan.mashups = find_mashups(plan, [e.analysis for e, _ in shifted], mashups)
+    return plan
 
 
 # (same type as the previous transition, as the one before that, per earlier use anywhere in the set)

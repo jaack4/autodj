@@ -91,6 +91,18 @@ class Transition(BaseModel):
     notes: list[str] = []  # planner's reasons, for humans
 
 
+class Mashup(BaseModel):
+    """A sung phrase from one track laid over another track's instrumental stretch."""
+
+    host: int  # index into tracks
+    host_bar: int
+    guest: int  # index into tracks: the track the vocal comes from
+    guest_bar: int
+    bars: int
+    semitones: int = 0  # pitch shift of the guest vocal (from the guest's original key)
+    notes: list[str] = []
+
+
 class MixPlan(BaseModel):
     version: int = 2
     name: str = "mix"
@@ -100,4 +112,5 @@ class MixPlan(BaseModel):
     target_lufs: float = -9.0  # per-track loudness before the master limiter
     tracks: list[PlanTrack]
     transitions: list[Transition]  # one per adjacent pair
+    mashups: list[Mashup] = []
     director: dict | None = None  # title, narrative, model, usage from the creative director (if used)

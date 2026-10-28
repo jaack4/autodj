@@ -453,6 +453,35 @@ def mix_alignment(plan: MixPlan, w: TransitionWindow) -> list[tuple[float, float
     return result
 
 
+MASHUP_LEVEL_DB = -2.0  # guest vocals sit just under the host
+
+
+def _render_mashups(plan: MixPlan, decks: list[Deck], mix: np.ndarray, sr: int, log) -> None:
+    """Lay each mashup's guest vocal over its host, tempo-matched, key-shifted and bar-aligned."""
+    from autodj.stems import separate
+
+    for m in plan.mashups:
+        host, track = decks[m.host], plan.tracks[m.guest]
+        g = analyze_file(Path(track.path), bpm_hint=track.bpm_hint)
+        guest = Deck(analysis=g, target_bpm=host.tempo_at_bar(m.host_bar),
+                     gain=10 ** ((plan.target_lufs - g.lufs + MASHUP_LEVEL_DB) / 20), semitones=m.semitones)
+        guest.build_time_map()
+        beat = 60 / guest.target_bpm
+        start, end = guest.bar_time(m.guest_bar), guest.bar_time(m.guest_bar + m.bars)
+        guest.play_from, guest.play_to = max(0.0, start - beat), end + beat  # room for pickups and tails
+        off_host, _ = region_offset_ms(host.analysis, m.host_bar, m.host_bar + m.bars)
+        off_guest, _ = region_offset_ms(g, m.guest_bar, m.guest_bar + m.bars)
+        nudge = (off_host / float(host.factor_at(host.bar_input_time(m.host_bar)))
+                 - off_guest / float(guest.factor_at(guest.bar_input_time(m.guest_bar)))) / 1000
+        guest.offset = host.offset + host.bar_time(m.host_bar) - start + nudge
+        t0, t1 = guest.offset + guest.play_from, guest.offset + guest.play_to
+        for band in BANDS:
+            guest.automation[band] = [(t0, 0.0), (t0 + beat, 1.0), (t1 - beat, 1.0), (t1, 0.0)]
+        log(f"mashup: {Path(g.path).stem} vocal over {Path(host.analysis.path).stem}")
+        vocals = guest.load_stretched(sr, source=str(separate(g.path, g.sha256)["vocals"]))
+        _add(mix, *_deck_signal(guest, vocals, sr))
+
+
 def load_stems(d: Deck, sr: int) -> dict[str, np.ndarray]:
     """All four stems, stretched and shifted exactly like the deck's mix."""
     from autodj.stems import STEM_NAMES, separate
@@ -495,6 +524,8 @@ def render(plan: MixPlan, log=lambda msg: None) -> tuple[np.ndarray, list[Deck],
             stems[i - 1] = None
         prev_audio = audio
     _add(mix, *_deck_signal(decks[-1], prev_audio, sr, stems[-1]))
+    del prev_audio, stems
+    _render_mashups(plan, decks, mix, sr, log)
     mix = mix[:, : int(np.ceil(max(d.offset + d.play_to for d in decks) * sr)) + 1]
     # JUCE's limiter treats the threshold as input gain and limits to 0 dBFS, so lower the
     # output afterwards to leave headroom for inter-sample peaks and lossy encoding.

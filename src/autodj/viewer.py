@@ -45,12 +45,20 @@ def _data(plan: MixPlan, decks: list[Deck], windows: list[TransitionWindow], che
             "bars": f"bar {tr.out_bar} → bar {tr.in_bar}" + (f", {tr.overlap_bars} bars" if tr.overlap_bars else ""),
             "notes": tr.notes, "check": check.get("verdict", ""), "nudge": f"{w.nudge_ms:+.0f} ms ({w.nudge_source})",
         })
+    mashups = []
+    for m in plan.mashups:
+        host = decks[m.host]
+        start = host.offset + host.bar_time(m.host_bar)
+        mashups.append({"lane": m.host, "start": start, "end": host.offset + host.bar_time(m.host_bar + m.bars),
+                        "label": "+ vocal: " + tracks[m.guest]["name"], "seek": max(0.0, start - 2 * 240 / host.target_bpm),
+                        "host": tracks[m.host]["name"], "guest": tracks[m.guest]["name"], "bars": m.bars,
+                        "notes": m.notes})
     director = None
     if plan.director:
         director = {"title": plan.director.get("title", ""), "narrative": plan.director.get("narrative", ""),
                     "model": plan.director.get("model", "")}
     return {"name": plan.name, "duration": max(t["end"] for t in tracks), "tracks": tracks,
-            "transitions": transitions, "colors": SECTION_COLORS, "director": director}
+            "transitions": transitions, "colors": SECTION_COLORS, "director": director, "mashups": mashups}
 
 
 def encode_mp3(wav: Path) -> Path:
@@ -89,6 +97,8 @@ TEMPLATE = """<!doctype html>
   .lane { position:relative; height:34px; margin:4px 0; }
   .track { position:absolute; top:0; height:100%; border-radius:4px; overflow:hidden; background:#2a313a; }
   .sec { position:absolute; top:0; height:100%; opacity:.85; }
+  .mash { position:absolute; bottom:0; height:9px; background:#c678dd; border-radius:2px; }
+  .mash span { position:absolute; bottom:10px; left:2px; font-size:11px; color:#e3b2f0; white-space:nowrap; text-shadow:0 1px 2px #000; }
   .tname { position:absolute; left:6px; top:8px; font-size:12px; white-space:nowrap; text-shadow:0 1px 2px #000; pointer-events:none; }
   .tr { position:absolute; top:0; bottom:0; background:rgba(122,162,247,.18); border-left:2px solid var(--accent);
         border-right:1px solid rgba(122,162,247,.5); }
@@ -132,6 +142,9 @@ D.tracks.forEach(t => {
     e.style.width = (100 * (s.end - s.start) / (t.end - t.start)) + "%"; e.style.background = D.colors[s.label] || "#444"; e.title = s.label; });
   el("div", "tname", box).textContent = t.name + "  ·  " + t.bpm + " BPM · " + t.key;
 });
+const lanes = inner.querySelectorAll(".lane");
+D.mashups.forEach(m => { const e = el("div", "mash", lanes[m.lane]); e.style.left = pct(m.start); e.style.width = pct(m.end - m.start);
+  el("span", "", e).textContent = m.label; e.title = m.label; });
 D.transitions.forEach(x => { const e = el("div", "tr", inner); e.style.left = pct(x.start); e.style.width = pct(x.end - x.start);
   el("span", "", e).textContent = x.type; });
 Object.entries(D.colors).forEach(([k, c]) => { if (k === "outro") return; const l = document.getElementById("legend");
@@ -146,6 +159,13 @@ D.transitions.forEach(x => {
   r.onclick = () => { audio.currentTime = x.seek; audio.play(); };
 });
 audio.addEventListener("error", () => { document.getElementById("audioerr").style.display = "block"; });
+D.mashups.forEach(m => {
+  const r = el("tr", "row", rows);
+  r.innerHTML = `<td class="time">${clock(m.start)}</td><td>mashup<div class="notes">${m.bars} bars</div></td>
+    <td>${m.guest}<div class="notes">sung over ${m.host}</div></td><td class="notes"></td><td class="notes"></td>`;
+  r.children[3].textContent = m.notes.join(" · ");
+  r.onclick = () => { audio.currentTime = m.seek; audio.play(); };
+});
 tl.onclick = e => { const b = inner.getBoundingClientRect();
   audio.currentTime = Math.min(D.duration, Math.max(0, D.duration * (e.clientX - b.left) / b.width)); audio.play(); };
 const tick = () => { head.style.left = pct(audio.currentTime); requestAnimationFrame(tick); };

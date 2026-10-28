@@ -59,3 +59,25 @@ Result: 3 overlays, 2 drop cuts, an echo-out, a filter sweep and a bass-swap ble
   during sections with real energy instead of in the fade.
 - Result on `mysongs`: 8 blends (6 filter sweeps, 2 bass swaps), mostly 16 bars. Energy on each side
   now mostly within ±0.2 (e.g. 0.55 → 0.56, 0.81 → 0.80).
+
+## Listening feedback (round 2) and fixes
+> "Too many where the first song clearly just fades out... the first transition would be better if the
+> vocals played throughout the whole transition." / "More creative transitions or mashups of songs if they
+> fit in the middle of a song."
+
+- **`stem_blend` (new, preferred in smooth style when stems exist):** parts swap one at a time instead of
+  whole tracks crossfading. B's drums creep in during the first half (its kick and bass held back by the
+  low band); drums and bass swap on the swap downbeat; melodies crossfade over the second half while
+  **A's vocals carry on over B's beat** to the end of the blend, then finish over one bar as B's vocals
+  come in. Needs stems and keys ≤1 step apart. Scoring: +0.2, plus +0.4 when A sings through the second
+  half; half the mud penalty; no vocal-clash penalty (B's vocals are held back).
+- Renderer: per-stem gains are applied as `mix + Σ (gain − 1) · stem`, so untouched parts stay exactly the
+  original mix (no separation artefacts unless a part is changed).
+- **Mid-song mashups (`--mashups 2`):** in a track's solo stretch, an instrumental window (drop/body/build,
+  ≤25% vocals, energy ≥ 0.5) gets an 8–16 bar sung phrase (≥60% vocals) from another track in the set:
+  tempo gap ≤ 8% (stretched to the host), keys within one step after a shift of ±2 semitones or less, bar-aligned
+  with a nudge, faded in and out over a beat, 2 dB under. Teasers of later tracks score higher than
+  callbacks; neighbours in the set lower. Max 2 per set, one per host, each guest used once.
+- On `mysongs`: all 8 transitions are stem blends (Ur Alive → gettin' hott scores highest, +2.33,
+  with Ur Alive's vocal carried over). 2 mashups: Uncaged's vocal phrase over shyne 4 me's drop, and
+  Under Your Spell's sung drop over how2fly's second drop.

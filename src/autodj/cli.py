@@ -122,6 +122,7 @@ def build_set(
     stems: Annotated[bool, typer.Option(help="Separate stems: avoids vocal clashes, enables acapella_overlay")] = False,
     max_shift: Annotated[int, typer.Option(help="Max pitch shift (semitones) to match keys; 0 turns it off")] = 2,
     style: Annotated[str, typer.Option(help="smooth: long real blends only | mixed: also cuts, echo outs, acapella overlays")] = "smooth",
+    mashups: Annotated[int, typer.Option(help="Max mid-song mashups (another track's vocal over an instrumental stretch); needs --stems")] = 2,
     director: Annotated[bool, typer.Option(help="Also ask Claude to pick transitions and narrate (needs ANTHROPIC_API_KEY)")] = False,
     output: Annotated[Path | None, typer.Option("-o", help="Plan file to write")] = None,
 ) -> None:
@@ -136,7 +137,7 @@ def build_set(
     if style not in ("smooth", "mixed"):
         raise typer.BadParameter("style must be smooth or mixed")
     plan = build_plan(source, keep_order=keep_order, arc=arc, bpm=bpm, stems=stems, log=log, max_shift=max_shift,
-                      style=style)
+                      style=style, mashups=mashups)
     typer.echo("")
     from autodj.camelot import shift_key
 
@@ -152,6 +153,10 @@ def build_set(
             typer.echo(f"       -> {how}: bar {tr.out_bar} into bar {tr.in_bar} ({tr.notes[0] if tr.notes else ''})")
             _warn_pair(a.model_copy(update={"key": key}), analyses[k + 1].model_copy(update={"key": keys[k + 1]}),
                        tr.type)
+    for m in plan.mashups:
+        typer.echo(f"  mashup: {Path(plan.tracks[m.guest].path).stem} (bars {m.guest_bar}-{m.guest_bar + m.bars}"
+                   f"{f', {m.semitones:+d} st' if m.semitones else ''}) sung over "
+                   f"{Path(plan.tracks[m.host].path).stem} from bar {m.host_bar} ({m.notes[0]})")
     plan_path = output or OUTPUT_DIR / "sets" / f"{plan.name}.json"
     _write_plan(plan, plan_path)
     if director:
@@ -272,6 +277,13 @@ def render(
         typer.echo(f"         {kind} {clock(w.start)}-{clock(w.end)} at {60 / w.beat:.1f} BPM, {swap}"
                    f"nudge {w.nudge_ms:+.0f} ms ({w.nudge_source}): kicks {flam:.1f} ms apart "
                    f"(confidence {conf_a:.1f}/{conf_b:.1f}), {verdict}")
+    for m in plan.mashups:
+        host = decks[m.host]
+        at = host.offset + host.bar_time(m.host_bar)
+        tracklist.setdefault("mashups", []).append({"at": round(at, 3), "host": Path(host.analysis.path).stem,
+                                                    "guest": Path(plan.tracks[m.guest].path).stem, "bars": m.bars})
+        typer.echo(f"         mashup at {clock(at)}: {Path(plan.tracks[m.guest].path).stem} vocal over "
+                   f"{Path(host.analysis.path).stem} ({m.bars} bars)")
     output.with_suffix(".tracklist.json").write_text(json.dumps(tracklist, indent=2))
     mp3 = encode_mp3(output)
     viewer = write_viewer(output.with_suffix(".html"), mp3, plan, decks, windows, checks)
