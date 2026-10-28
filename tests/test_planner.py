@@ -112,3 +112,14 @@ def test_no_loud_entry_over_a_quiet_outro():
     assert c.out_bar + c.overlap <= 80  # blends out of A's body, not its faded outro
     from_outro = [x for x in candidates(a, b, style="smooth") if x.out_bar >= 80]
     assert from_outro and all(any("faded" in r or "intense" in r for r in x.reasons) for x in from_outro)
+
+
+def test_stem_blend_needs_stems_and_rewards_carried_vocals(club_track):
+    assert not candidates(club_track(), club_track(), kinds=("stem_blend",))  # no stems
+    v_outro = _vocals(112, [(96, 112)])  # A sings through its outro
+    a = club_track(vocals=v_outro)
+    b = club_track(vocals=_vocals(112, []))
+    best = best_transition(a, b, style="smooth")
+    assert best.kind == "stem_blend"
+    assert any("carry across" in r for r in best.reasons)
+    assert not candidates(a, club_track(key="3B", vocals=v_outro), kinds=("stem_blend",))  # clashing keys

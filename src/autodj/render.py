@@ -53,7 +53,7 @@ class Deck:
     play_to: float = 0.0
     automation: dict[str, Breakpoints] = field(default_factory=lambda: {b: [] for b in BANDS})
     filters: list[tuple[str, Breakpoints]] = field(default_factory=list)  # ("highpass"|"lowpass", (mix t, Hz))
-    stem_gains: dict[str, Breakpoints] = field(default_factory=dict)  # "vocals" / "instrumental" -> gains
+    stem_gains: dict[str, Breakpoints] = field(default_factory=dict)  # drums / bass / other / vocals -> gains
     echo: "Echo | None" = None
     _map_in: np.ndarray = field(default_factory=lambda: np.zeros(0))
     _map_out: np.ndarray = field(default_factory=lambda: np.zeros(0))
@@ -170,6 +170,8 @@ def _cut(out: Deck, inc: Deck, t: float) -> None:
         inc.automation[band] += [(t - CUT_FADE_S, 0.0), (t, 1.0)]
 
 
+INSTRUMENTAL = ("drums", "bass", "other")
+STEM_TRANSITIONS = ("acapella_overlay", "stem_blend")  # need the decks' separated stems
 OVERLAY_BLEND_IN_BARS = 4  # B's beat fades in over the overlay's last bars
 OVERLAY_BLEND_OUT_BARS = 2  # A's beat fades out after the bass swap
 
@@ -180,11 +182,31 @@ def _acapella_overlay(out: Deck, inc: Deck, t0: float, t1: float, beat: float) -
     bar = 4 * beat
     blend_in = max(t0, t1 - OVERLAY_BLEND_IN_BARS * bar)
     out.stem_gains.setdefault("vocals", []).extend([(t0 - beat, 1.0), (t0, 0.0)])
-    inc.stem_gains.setdefault("instrumental", []).extend(_fade(blend_in, t1, rising=True))
+    for stem in INSTRUMENTAL:
+        inc.stem_gains.setdefault(stem, []).extend(_fade(blend_in, t1, rising=True))
     inc.automation["low"] += [(t1 - SWAP_RAMP_S, 0.0), (t1, 1.0)]
     out.automation["low"] += [(t1 - SWAP_RAMP_S, 1.0), (t1, 0.0)]
     for band in ("mid", "high"):
         out.automation[band] += _fade(t1, t1 + OVERLAY_BLEND_OUT_BARS * bar, rising=False)
+
+
+def _stem_blend(out: Deck, inc: Deck, t0: float, t1: float, ts: float, beat: float) -> None:
+    """Swap the parts one at a time instead of crossfading whole tracks:
+    1st half: B's drums creep in (its kick and bass held back by the low band);
+    swap downbeat: drums and bass change over;
+    2nd half: melodies crossfade while A's vocals carry on over B's beat;
+    end: A's vocals finish over a bar as B's come in."""
+    bar = 4 * beat
+    inc.automation["low"] += [(ts - SWAP_RAMP_S, 0.0), (ts, 1.0)]
+    out.automation["low"] += [(ts - SWAP_RAMP_S, 1.0), (ts, 0.0)]
+    inc.stem_gains["drums"] = _fade(t0, ts, rising=True)
+    out.stem_gains["drums"] = [(ts - SWAP_RAMP_S, 1.0), (ts, 0.0)]
+    inc.stem_gains["bass"] = [(ts - SWAP_RAMP_S, 0.0), (ts, 1.0)]
+    out.stem_gains["bass"] = [(ts - SWAP_RAMP_S, 1.0), (ts, 0.0)]
+    inc.stem_gains["other"] = _fade(ts, t1, rising=True)
+    out.stem_gains["other"] = _fade(ts, t1, rising=False)
+    inc.stem_gains["vocals"] = _fade(t1, t1 + bar, rising=True)
+    out.stem_gains["vocals"] = _fade(t1, t1 + bar, rising=False)
 
 
 def apply_transition(w: "TransitionWindow") -> None:
@@ -203,6 +225,8 @@ def apply_transition(w: "TransitionWindow") -> None:
         _cut(a, b, w.start)
     elif tr.type == "acapella_overlay":
         _acapella_overlay(a, b, w.start, w.end, w.beat)
+    elif tr.type == "stem_blend":
+        _stem_blend(a, b, w.start, w.end, w.swap, w.beat)
     else:
         raise ValueError(f"Unknown transition type: {tr.type}")
 
@@ -338,6 +362,8 @@ def place(plan: MixPlan, decks: list[Deck]) -> list[TransitionWindow]:
             a.play_to += CUT_FADE_S
         elif tr.type == "acapella_overlay":
             a.play_to += OVERLAY_BLEND_OUT_BARS * bar
+        elif tr.type == "stem_blend":
+            a.play_to += bar  # A's vocals finish their phrase over B
         windows.append(TransitionWindow(tr, t0, ts, t1, bar / 4, a, b))
     decks[-1].play_to = decks[-1].to_out(decks[-1].analysis.duration)
     return windows
@@ -350,19 +376,20 @@ def _segment(audio: np.ndarray, s0: int, n: int, gain: float) -> np.ndarray:
     return seg
 
 
-def _deck_signal(d: Deck, audio: np.ndarray, sr: int, vocals: np.ndarray | None = None) -> tuple[int, np.ndarray]:
-    """(mix start sample, automated audio) for the part of the deck that plays."""
+def _deck_signal(d: Deck, audio: np.ndarray, sr: int, stems: dict[str, np.ndarray] | None = None) -> tuple[int, np.ndarray]:
+    """(mix start sample, automated audio) for the part of the deck that plays.
+
+    Stem gains are applied as mix + sum((gain - 1) * stem), so untouched stems leave the
+    original mix exactly as it was (no separation artefacts unless a stem is changed).
+    """
     s0 = int(round(d.play_from * sr))
     n = int(round(d.play_to * sr)) - s0
     seg = _segment(audio, s0, n, d.gain)
     times = d.offset + np.arange(s0, s0 + n) / sr
-    if vocals is not None:
-        voc = _segment(vocals, s0, n, d.gain)
-        gain = {}
-        for stem in ("vocals", "instrumental"):
-            points = d.stem_gains.get(stem)
-            gain[stem] = np.interp(times, *zip(*points)) if points else 1.0
-        seg = gain["instrumental"] * (seg - voc) + gain["vocals"] * voc
+    for stem, points in d.stem_gains.items():
+        if stems is None or stem not in stems:
+            raise ValueError(f"{Path(d.analysis.path).name}: stem {stem!r} needed but not loaded")
+        seg += (np.interp(times, *zip(*points)) - 1.0) * _segment(stems[stem], s0, n, d.gain)
     out = np.zeros_like(seg)
     for band, x in _split_bands(seg, sr).items():
         points = d.automation[band]
@@ -426,6 +453,14 @@ def mix_alignment(plan: MixPlan, w: TransitionWindow) -> list[tuple[float, float
     return result
 
 
+def load_stems(d: Deck, sr: int) -> dict[str, np.ndarray]:
+    """All four stems, stretched and shifted exactly like the deck's mix."""
+    from autodj.stems import STEM_NAMES, separate
+
+    paths = separate(d.analysis.path, d.analysis.sha256)
+    return {name: d.load_stretched(sr, source=str(paths[name])) for name in STEM_NAMES}
+
+
 def _add(mix: np.ndarray, m0: int, signal: np.ndarray) -> None:
     if m0 < 0:
         signal, m0 = signal[:, -m0:], 0
@@ -439,17 +474,15 @@ def render(plan: MixPlan, log=lambda msg: None) -> tuple[np.ndarray, list[Deck],
     windows = place(plan, decks)
     end = max(d.offset + d.play_to for d in decks)
     mix = np.zeros((2, int(np.ceil(end * sr)) + 1 + sr), np.float32)  # +1 s of room for nudges
-    overlay = [t.type == "acapella_overlay" for t in plan.transitions]
-    needs_vocals = [(i > 0 and overlay[i - 1]) or (i < len(overlay) and overlay[i]) for i in range(len(decks))]
-    vocals: list[np.ndarray | None] = [None] * len(decks)
+    uses_stems = [t.type in STEM_TRANSITIONS for t in plan.transitions]
+    needs_stems = [(i > 0 and uses_stems[i - 1]) or (i < len(uses_stems) and uses_stems[i]) for i in range(len(decks))]
+    stems: list[dict[str, np.ndarray] | None] = [None] * len(decks)
     prev_audio = None
     for i, d in enumerate(decks):  # one deck (plus the previous one) in memory at a time
         log(f"[{i + 1}/{len(decks)}] rendering {Path(d.analysis.path).name}")
         audio = d.load_stretched(sr)
-        if needs_vocals[i]:
-            from autodj.stems import separate
-
-            vocals[i] = d.load_stretched(sr, source=str(separate(d.analysis.path, d.analysis.sha256)["vocals"]))
+        if needs_stems[i]:
+            stems[i] = load_stems(d, sr)
         if i > 0:
             w = windows[i - 1]
             _nudge(w, prev_audio, audio, sr)
@@ -458,10 +491,10 @@ def render(plan: MixPlan, log=lambda msg: None) -> tuple[np.ndarray, list[Deck],
                 w.out_audio = _capture(decks[i - 1], prev_audio, w, sr)
                 w.in_audio = _capture(d, audio, w, sr)
             apply_transition(w)
-            _add(mix, *_deck_signal(decks[i - 1], prev_audio, sr, vocals[i - 1]))  # its automation is complete
-            vocals[i - 1] = None
+            _add(mix, *_deck_signal(decks[i - 1], prev_audio, sr, stems[i - 1]))  # its automation is complete
+            stems[i - 1] = None
         prev_audio = audio
-    _add(mix, *_deck_signal(decks[-1], prev_audio, sr, vocals[-1]))
+    _add(mix, *_deck_signal(decks[-1], prev_audio, sr, stems[-1]))
     mix = mix[:, : int(np.ceil(max(d.offset + d.play_to for d in decks) * sr)) + 1]
     # JUCE's limiter treats the threshold as input gain and limits to 0 dBFS, so lower the
     # output afterwards to leave headroom for inter-sample peaks and lossy encoding.

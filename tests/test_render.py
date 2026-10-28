@@ -180,9 +180,10 @@ def test_acapella_overlay_mixes_stems(club_track):
     sr = 8000
     t = np.arange(int(300 * sr)) / sr
     tone = np.sin(2 * np.pi * 1000 * t).astype(np.float32)  # mid band, untouched by bass swaps
-    full, vocals = np.stack([tone, tone]), np.stack([tone, tone]) * 0.25  # instrumental = 0.75
-    ma, sa = _deck_signal(da, full, sr, vocals)
-    mb, sb = _deck_signal(db, full, sr, vocals)
+    full = np.stack([tone, tone])
+    stems = {name: full * 0.25 for name in ("drums", "bass", "other", "vocals")}  # sums to the mix
+    ma, sa = _deck_signal(da, full, sr, stems)
+    mb, sb = _deck_signal(db, full, sr, stems)
 
     def level(m0, sig, when):
         i = int(when * sr) - m0
@@ -194,3 +195,33 @@ def test_acapella_overlay_mixes_stems(club_track):
     assert level(mb, sb, w.end - 2 * w.beat) > 0.4  # B's beat fading in before the end
     assert level(mb, sb, w.end + 1) == pytest.approx(1.0, abs=0.03)  # then B in full
     assert da.offset + da.play_to == pytest.approx(w.end + OVERLAY_BLEND_OUT_BARS * 4 * w.beat)  # A fades out
+
+
+def test_stem_blend_swaps_parts_and_carries_vocals(club_track):
+    from autodj.models import Transition
+    from autodj.render import _deck_signal, apply_transition, place
+
+    plan = _plan([Transition(type="stem_blend", out_bar=80, in_bar=0, overlap_bars=16, swap_bar=8)])
+    da, db = _decks(plan, [club_track(bpm=120.0), club_track(bpm=120.0)])
+    (w,) = place(plan, [da, db])
+    apply_transition(w)
+    sr = 8000
+    t = np.arange(int(300 * sr)) / sr
+    tone = np.stack([np.sin(2 * np.pi * 1000 * t)] * 2).astype(np.float32)  # mid band only
+
+    def part(name):  # a deck where only one stem is present, to read that stem's gain
+        stems = {n: tone * (1.0 if n == name else 0.0) for n in ("drums", "bass", "other", "vocals")}
+        return stems
+
+    def level(d, name, when):
+        m0, sig = _deck_signal(d, part(name)["drums"] * 0 + sum(part(name).values()), sr, part(name))
+        i = int(when * sr) - m0
+        return float(np.sqrt(2 * np.mean(sig[0, i : i + sr // 20] ** 2))) if 0 <= i < sig.shape[1] else 0.0
+
+    bar = 4 * w.beat
+    early, late = w.start + 2 * bar, w.end - 2 * bar
+    assert level(db, "drums", early) > 0.1 and level(db, "other", early) < 0.05  # B's drums creep in first
+    assert level(da, "drums", late) < 0.05 and level(db, "drums", late) > 0.95  # drums swapped
+    assert level(da, "vocals", w.end - 0.5 * bar) > 0.95  # A's vocals carry across the whole blend
+    assert level(db, "vocals", late) < 0.05  # B's vocals wait
+    assert level(da, "vocals", w.end + 1.5 * bar) == 0.0  # and A has finished a bar later

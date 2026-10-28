@@ -17,7 +17,7 @@ SPLICE_TOLERANCE_MS = 25.0
 UNCERTAIN_KEY = 0.03  # key confidence below this: don't trust the key to rule anything out
 
 
-BLENDS = ("bass_swap_blend", "filter_sweep")
+BLENDS = ("bass_swap_blend", "filter_sweep", "stem_blend")
 STYLES = {  # transition types each style may use
     "smooth": BLENDS,  # real mixing: long overlaps, nothing abrupt
     "mixed": None,  # everything, including cuts, echo outs and acapella overlays
@@ -161,12 +161,18 @@ def score(a: Analysis, b: Analysis, c: Candidate, preferred_overlap: int, style:
         ea = np.array(a.bar_energy[c.out_bar : a_end])
         eb = np.array(b.bar_energy[c.in_bar : b_end])
         mud = 2.0 * float(np.clip(ea + eb - 1.2, 0, None).mean())
-        add(-mud * (0.5 if c.kind == "filter_sweep" else 1.0), "both tracks loud at once (mud)")
+        add(-mud * (1.0 if c.kind == "bass_swap_blend" else 0.5), "both tracks loud at once (mud)")
         if b_end in b.section_starts():
             add(0.5, "blend ends on a B section change")
             if b.section_at(b_end).label == "drop":
                 add(0.3, "blend lands on B's drop")
-        if a.bar_vocals is not None and b.bar_vocals is not None:
+        if c.kind == "stem_blend":
+            add(0.2, "stem blend: drums, bass and melody swap separately")
+            swap = c.out_bar + (c.swap_bar or c.overlap // 2)
+            carried = float(np.mean(np.array(a.bar_vocals[swap:a_end]) > VOCAL_ON)) if a_end > swap else 0.0
+            if carried >= 0.5:
+                add(0.4, f"A's vocals carry across B's beat ({carried:.0%} of the second half)")
+        elif a.bar_vocals is not None and b.bar_vocals is not None:  # stem blends hold B's vocals back
             va = np.array(a.bar_vocals[c.out_bar : a_end]) > VOCAL_ON
             vb = np.array(b.bar_vocals[c.in_bar : b_end]) > VOCAL_ON
             both = float((va & vb).mean())
@@ -228,6 +234,9 @@ def _blend_candidates(a: Analysis, b: Analysis, min_out_bar: int, style: str = "
         for kind in BLENDS:
             if kind == "filter_sweep" and overlap not in (8, 16, 32):
                 continue
+            if kind == "stem_blend" and (a.bar_vocals is None or b.bar_vocals is None
+                                         or key_distance(a, b) > 1 or overlap < 8):
+                continue  # needs stems, and A's parts must sit in key over B's
             for o in outs:
                 for i in ins:
                     c = Candidate(out_bar=o, in_bar=i, overlap=overlap, swap_bar=_swap_bar(b, i, overlap), kind=kind)

@@ -80,7 +80,7 @@ class PlanTrack(BaseModel):
 
 
 class Transition(BaseModel):
-    type: Literal["bass_swap_blend", "filter_sweep", "echo_out", "drop_cut", "acapella_overlay"] = "bass_swap_blend"
+    type: Literal["bass_swap_blend", "filter_sweep", "stem_blend", "echo_out", "drop_cut", "acapella_overlay"] = "bass_swap_blend"
     out_bar: int  # bar of the outgoing track where the overlap (or cut) starts
     in_bar: int = 0  # bar of the incoming track that lands on out_bar
     overlap_bars: int = 16  # 0 for echo_out / drop_cut
