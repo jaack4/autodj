@@ -256,6 +256,12 @@ def candidates(a: Analysis, b: Analysis, min_out_bar: int = 0, kinds: tuple[str,
 
 def best_transition(a: Analysis, b: Analysis, min_out_bar: int = 0, kinds: tuple[str, ...] | None = None) -> Candidate:
     found = candidates(a, b, min_out_bar, kinds)
-    if not found:
-        raise ValueError(f"No transition fits between {a.path} and {b.path}")
-    return found[0]
+    if found:
+        return found[0]
+    if kinds and "echo_out" not in kinds:
+        raise ValueError(f"No {'/'.join(kinds)} transition fits between {a.path} and {b.path}")
+    # Nothing scored (very short tracks, or a late previous blend): echo out of A's last full bar.
+    out_bar = a.n_bars - 1
+    if out_bar < max(min_out_bar, 1):
+        raise ValueError(f"{a.path} is too short to leave room for its transitions")
+    return Candidate(out_bar, 0, 0, None, kind="echo_out", score=-1.0, reasons=["fallback: nothing else fits"])

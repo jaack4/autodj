@@ -45,6 +45,12 @@ class Analysis(BaseModel):
         return self.bar_vocals is not None
 
     @property
+    def has_steady_beat(self) -> bool:
+        """At least a third of the track has kicks the grid locks onto."""
+        conf = self.bar_offset_confidence
+        return sum(c >= 1.5 for c in conf) >= len(conf) / 3
+
+    @property
     def n_bars(self) -> int:
         return len(self.downbeats)
 

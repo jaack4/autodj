@@ -10,6 +10,7 @@ import pyloudnorm
 
 from autodj.analysis.beats import ALIGN_WINDOW, BackendUnavailable, beat_this_checkpoint_cached, detect_grid
 from autodj.analysis.key import estimate_key
+from autodj.audio import load as load_audio
 from autodj.analysis.structure import bar_features, novelty, segment
 from autodj.camelot import key_name, to_camelot
 from autodj.models import Analysis
@@ -31,7 +32,7 @@ def _cache_path(sha: str, backend: str, bpm_hint: float | None) -> Path:
 
 
 def _analyze(path: Path, sha: str, backend: str, bpm_hint: float | None) -> Analysis:
-    stereo, native_sr = librosa.load(path, sr=None, mono=False)
+    stereo, native_sr = load_audio(path, sr=None, mono=False)
     stereo = np.atleast_2d(stereo)
     lufs = pyloudnorm.Meter(native_sr).integrated_loudness(stereo.T)
     y = librosa.resample(stereo.mean(axis=0), orig_sr=native_sr, target_sr=ANALYSIS_SR)

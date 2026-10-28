@@ -12,6 +12,7 @@ import numpy as np  # noqa: E402
 import soundfile as sf  # noqa: E402
 
 from autodj.models import Analysis  # noqa: E402
+from autodj.audio import load as load_audio  # noqa: E402
 
 OUTPUT_DIR = Path("output")
 LISTEN_SR = 44100
@@ -34,7 +35,7 @@ def report_dir(a: Analysis) -> Path:
 
 def write_clicks(a: Analysis, out: Path) -> Path:
     """Track at reduced level + soft clicks on beats, louder on downbeats, a tone at section starts."""
-    y, _ = librosa.load(a.path, sr=LISTEN_SR, mono=True)
+    y, _ = load_audio(a.path, sr=LISTEN_SR, mono=True)
     n = len(y)
     beats = librosa.clicks(times=a.beats, sr=LISTEN_SR, click_freq=2000, click_duration=0.03, length=n)
     bars = librosa.clicks(times=a.downbeats, sr=LISTEN_SR, click_freq=1000, click_duration=0.06, length=n)
@@ -48,7 +49,7 @@ def write_clicks(a: Analysis, out: Path) -> Path:
 
 
 def write_plot(a: Analysis, out: Path) -> Path:
-    y, sr = librosa.load(a.path, sr=11025, mono=True)
+    y, sr = load_audio(a.path, sr=11025, mono=True)
     rms = librosa.feature.rms(y=y, hop_length=256)[0]
     t = librosa.frames_to_time(np.arange(len(rms)), sr=sr, hop_length=256)
 

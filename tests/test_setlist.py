@@ -44,3 +44,13 @@ def test_load_playlist_folder(tmp_path):
         (tmp_path / n).touch()
     _, tracks, _ = load_playlist(tmp_path)
     assert [t.path.split("/")[-1] for t in tracks] == ["a.mp3", "b.flac"]
+
+
+def test_unreadable_files_are_skipped(tmp_path):
+    from autodj.setlist import analyze_entries
+
+    (tmp_path / "broken.mp3").write_text("not audio")
+    logged = []
+    entries = analyze_entries([PlanTrack(path=str(tmp_path / "broken.mp3"))], log=logged.append)
+    assert entries == []
+    assert any("skipped" in m for m in logged)

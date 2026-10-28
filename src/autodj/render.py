@@ -16,6 +16,7 @@ import pedalboard
 from scipy.signal import butter, sosfiltfilt
 
 from autodj.analysis import analyze_file
+from autodj.audio import load as load_audio
 from autodj.analysis.beats import MIN_CONFIDENCE, onset_offset
 from autodj.models import Analysis, MixPlan, PlanTrack, Transition
 from autodj.planner import region_offset_ms
@@ -91,7 +92,7 @@ class Deck:
 
     def load_stretched(self, sr: int, source: str | None = None) -> np.ndarray:
         """The deck's audio (or one of its stems), time-stretched along its tempo curve."""
-        audio, _ = librosa.load(source or self.analysis.path, sr=sr, mono=False)
+        audio, _ = load_audio(source or self.analysis.path, sr=sr, mono=False)
         audio = np.atleast_2d(audio).astype(np.float32)
         if audio.shape[0] == 1:
             audio = np.repeat(audio, 2, axis=0)
@@ -419,7 +420,7 @@ def _add(mix: np.ndarray, m0: int, signal: np.ndarray) -> None:
     mix[:, m0 : m0 + n] += signal[:, :n]
 
 
-def render(plan: MixPlan) -> tuple[np.ndarray, list[Deck], list[TransitionWindow]]:
+def render(plan: MixPlan, log=lambda msg: None) -> tuple[np.ndarray, list[Deck], list[TransitionWindow]]:
     sr = plan.sample_rate
     decks = [make_deck(t, plan) for t in plan.tracks]
     windows = place(plan, decks)
@@ -430,6 +431,7 @@ def render(plan: MixPlan) -> tuple[np.ndarray, list[Deck], list[TransitionWindow
     vocals: list[np.ndarray | None] = [None] * len(decks)
     prev_audio = None
     for i, d in enumerate(decks):  # one deck (plus the previous one) in memory at a time
+        log(f"[{i + 1}/{len(decks)}] rendering {Path(d.analysis.path).name}")
         audio = d.load_stretched(sr)
         if needs_vocals[i]:
             from autodj.stems import separate

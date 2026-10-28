@@ -27,6 +27,8 @@ def analyze(
     for path in paths:
         a = analyze_file(path, backend=backend, bpm_hint=bpm, force=force, stems=stems)
         grid = "ok" if a.grid_ok else "DRIFTING (tempo not constant or BPM off)"
+        if not a.has_steady_beat:
+            grid = "NO STEADY BEAT (tempo is a guess)"
         typer.secho(f"\n{path.name}", bold=True)
         typer.echo(f"  {a.bpm} BPM  {a.key} ({a.key_name}, conf {a.key_confidence})  {a.lufs} LUFS  "
                    f"{a.duration:.0f}s  [{a.beat_backend}]")
@@ -125,7 +127,11 @@ def build_set(
     from autodj.report import OUTPUT_DIR
     from autodj.setlist import build_plan
 
-    plan = build_plan(source, keep_order=keep_order, arc=arc, bpm=bpm, stems=stems)
+    def log(msg: str) -> None:
+        typer.secho(msg, err=True, fg="yellow" if msg.lstrip().startswith(("warning", "skipped")) else None)
+
+    plan = build_plan(source, keep_order=keep_order, arc=arc, bpm=bpm, stems=stems, log=log)
+    typer.echo("")
     analyses = [analyze_file(Path(t.path), bpm_hint=t.bpm_hint) for t in plan.tracks]
     for k, (t, a) in enumerate(zip(plan.tracks, analyses)):
         key = t.key or a.key
@@ -156,7 +162,7 @@ def render(
     from autodj.render import render as render_plan
 
     plan = MixPlan.model_validate_json(plan_file.read_text())
-    mix, decks, windows = render_plan(plan)
+    mix, decks, windows = render_plan(plan, log=lambda msg: typer.echo(msg, err=True))
     output = output or plan_file.with_suffix(".wav")
     sf.write(output, mix.T, plan.sample_rate, subtype="PCM_24")
 

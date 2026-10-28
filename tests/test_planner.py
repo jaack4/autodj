@@ -90,3 +90,9 @@ def test_acapella_overlay_needs_stems_and_compatible_keys(club_track):
     best = found[0]
     assert best.in_bar + best.overlap == 16  # B's vocal phrase ends where its drop comes in
     assert any("drop" in r for r in best.reasons)
+
+
+def test_short_tracks_fall_back_to_an_echo_out():
+    tiny = make_analysis([("intro", 0, 1, 0.3), ("outro", 1, 5, 0.9)])
+    c = best_transition(tiny, tiny)
+    assert c.kind == "echo_out" and c.out_bar < tiny.n_bars

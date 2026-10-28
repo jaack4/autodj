@@ -3,9 +3,10 @@
 from functools import cache
 from pathlib import Path
 
-import librosa
 import numpy as np
 import soundfile as sf
+
+from autodj.audio import load as load_audio
 
 STEMS_DIR = Path(".cache/stems")
 MODEL = "htdemucs"
@@ -50,7 +51,7 @@ def separate(path: str, sha: str) -> dict[str, Path]:
     from demucs.apply import apply_model
 
     model = _model()
-    audio, _ = librosa.load(path, sr=model.samplerate, mono=False)
+    audio, _ = load_audio(path, sr=model.samplerate, mono=False)
     audio = np.atleast_2d(audio)
     if audio.shape[0] == 1:
         audio = np.repeat(audio, 2, axis=0)
@@ -64,7 +65,7 @@ def separate(path: str, sha: str) -> dict[str, Path]:
 
 
 def _bar_power_db(path: str | Path, downbeats: list[float]) -> np.ndarray:
-    y, sr = librosa.load(path, sr=22050, mono=True)
+    y, sr = load_audio(path, sr=22050, mono=True)
     bar_len = float(np.diff(downbeats).mean())
     edges = np.r_[downbeats, downbeats[-1] + bar_len]
     return np.array([10 * np.log10(np.mean(y[int(a * sr) : int(b * sr)] ** 2) + 1e-12) for a, b in zip(edges, edges[1:])])

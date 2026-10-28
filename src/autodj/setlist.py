@@ -13,7 +13,8 @@ from autodj.models import Analysis, MixPlan, PlanTrack
 from autodj.planner import Candidate, best_transition, tempo_gap
 
 AUDIO_EXTENSIONS = {".mp3", ".wav", ".flac", ".aiff", ".aif", ".m4a", ".ogg"}
-MIN_SOLO_BARS = 8  # a track plays alone at least this long between its two blends
+MIN_SOLO_BARS = 8  # a track plays alone at least this long between its two blends (if it's long enough)
+MIN_TRACK_BARS = 16  # shorter files (jingles, snippets) are skipped
 EXACT_ORDER_MAX_TRACKS = 12  # Held-Karp above this gets slow; fall back to greedy + 2-opt
 ARCS = ("warmup_peak", "flat")
 
@@ -45,10 +46,21 @@ def load_playlist(source: Path) -> tuple[str, list[PlanTrack], dict]:
     raise ValueError(f"Not a playlist or folder: {source}")
 
 
-def analyze_entries(tracks: list[PlanTrack], stems: bool = False) -> list[Entry]:
+def analyze_entries(tracks: list[PlanTrack], stems: bool = False, log=print) -> list[Entry]:
+    """Analyze every track (cached). Unreadable files are skipped with a warning."""
     entries = []
-    for t in tracks:
-        a = analyze_file(Path(t.path), bpm_hint=t.bpm_hint, stems=stems)
+    for k, t in enumerate(tracks):
+        log(f"[{k + 1}/{len(tracks)}] analyzing {Path(t.path).name}")
+        try:
+            a = analyze_file(Path(t.path), bpm_hint=t.bpm_hint, stems=stems)
+        except Exception as e:  # one bad file shouldn't sink the set
+            log(f"  skipped: {e}")
+            continue
+        if a.n_bars < MIN_TRACK_BARS:
+            log(f"  skipped: only {a.n_bars} bars long (need {MIN_TRACK_BARS} to mix)")
+            continue
+        if not a.has_steady_beat:
+            log(f"  warning: no steady beat found; its tempo ({a.bpm:.1f} BPM) is a guess")
         if t.key:  # the user's key beats detection
             a = a.model_copy(update={"key": t.key, "key_confidence": 1.0})
         entries.append(Entry(track=t.model_copy(update={"path": a.path}), analysis=a))
@@ -124,16 +136,18 @@ def order_tracks(entries: list[Entry], arc: str) -> tuple[list[int], dict[tuple[
 
 
 def build_plan(
-    source: Path, keep_order: bool | None = None, arc: str | None = None, bpm: float | None = None, stems: bool = False
+    source: Path, keep_order: bool | None = None, arc: str | None = None, bpm: float | None = None,
+    stems: bool = False, log=print,
 ) -> MixPlan:
     name, tracks, options = load_playlist(source)
-    if len(tracks) < 2:
-        raise ValueError("A set needs at least two tracks")
     keep_order = options.get("keep_order", False) if keep_order is None else keep_order
     arc = arc or options.get("energy_arc", "warmup_peak")
     if arc not in ARCS:
         arc = "flat"
-    entries = analyze_entries(tracks, stems=stems)
+    entries = analyze_entries(tracks, stems=stems, log=log)
+    if len(entries) < 2:
+        raise ValueError("A set needs at least two readable tracks")
+    log(f"planning {len(entries)} tracks")
     if keep_order:
         order = list(range(len(entries)))
         transitions = {(i, i + 1): best_transition(entries[i].analysis, entries[i + 1].analysis)
@@ -146,7 +160,8 @@ def build_plan(
         c = transitions[i, j]
         if c.out_bar < min_out:  # would collide with this track's incoming blend
             c = best_transition(entries[i].analysis, entries[j].analysis, min_out_bar=min_out)
-        min_out = c.in_bar + c.overlap + MIN_SOLO_BARS
+        blend_end = c.in_bar + c.overlap
+        min_out = blend_end + min(MIN_SOLO_BARS, max(0, entries[j].analysis.n_bars - blend_end - 4))
         t = c.transition()
         t.notes = [f"score {c.score:+.2f}"] + c.reasons
         plan_transitions.append(t)
