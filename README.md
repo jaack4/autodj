@@ -47,8 +47,11 @@ constant or the file has an edit in it.
 **2. Plan and render a whole set**
 ```sh
 uv run autodj set ~/Music/new/               # a folder; or a playlist .yaml (see examples/)
-uv run autodj render output/sets/new.json    # -> output/sets/new.wav + new.tracklist.json
+uv run autodj render output/sets/new.json    # -> output/sets/new.wav, new.tracklist.json, new.html
 ```
+Open `output/sets/new.html` in a browser. It shows the mix as one lane per
+track, coloured by section, with every transition marked. Click a transition
+in the table to jump to 4 bars before it, or click anywhere on the timeline.
 `set` prints the order, each transition with the planner's score, and warnings
 (key clashes, big tempo jumps, drifting grids). `render` prints each track's
 start time and, for every blend, how far apart the two tracks' kicks are

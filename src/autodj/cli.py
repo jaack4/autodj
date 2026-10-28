@@ -160,6 +160,7 @@ def render(
     from autodj.models import MixPlan
     from autodj.render import mix_alignment
     from autodj.render import render as render_plan
+    from autodj.viewer import write_viewer
 
     plan = MixPlan.model_validate_json(plan_file.read_text())
     mix, decks, windows = render_plan(plan, log=lambda msg: typer.echo(msg, err=True))
@@ -170,6 +171,7 @@ def render(
         return f"{int(t // 60)}:{t % 60:04.1f}"
 
     tracklist = {"plan": str(plan_file), "tracks": [], "transitions": []}
+    checks: list[dict] = []
     for d, t in zip(decks, plan.tracks):
         start = d.offset + d.play_from
         name = " - ".join(x for x in (t.artist, t.title) if x) or Path(d.analysis.path).stem
@@ -183,6 +185,7 @@ def render(
             tracklist["transitions"].append({"type": kind, "at": round(w.start, 3), "nudge_ms": round(w.nudge_ms, 1),
                                              "nudge_source": w.nudge_source})
             typer.echo(f"         {kind} at {clock(w.start)}, nudge {w.nudge_ms:+.0f} ms ({w.nudge_source})")
+            checks.append({"verdict": "cut: no overlap to check"})
             continue
         (off_a, conf_a), (off_b, conf_b) = mix_alignment(plan, w)
         flam = abs(off_a - off_b)
@@ -197,9 +200,12 @@ def render(
             verdict = "tight" if flam <= 10 else "audible flam" if flam > 20 else "borderline"
         if kind == "acapella_overlay":
             verdict += " (beats don't overlap in an acapella overlay; this is the vocal's timing)"
+        checks.append({"verdict": f"kicks {flam:.1f} ms apart: {verdict}"})
         swap = f"bass swap {clock(w.swap)}, " if kind in ("bass_swap_blend", "filter_sweep") else ""
         typer.echo(f"         {kind} {clock(w.start)}-{clock(w.end)} at {60 / w.beat:.1f} BPM, {swap}"
                    f"nudge {w.nudge_ms:+.0f} ms ({w.nudge_source}): kicks {flam:.1f} ms apart "
                    f"(confidence {conf_a:.1f}/{conf_b:.1f}), {verdict}")
     output.with_suffix(".tracklist.json").write_text(json.dumps(tracklist, indent=2))
+    viewer = write_viewer(output.with_suffix(".html"), output, plan, decks, windows, checks)
     typer.echo(f"mix: {output}  ({mix.shape[1] / plan.sample_rate / 60:.1f} min)")
+    typer.echo(f"viewer: {viewer}  (open it in a browser to listen and jump between transitions)")
