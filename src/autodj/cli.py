@@ -81,7 +81,7 @@ def pair(
     out_bar: Annotated[int | None, typer.Option(help="Bar of A where the blend starts (default: planner)")] = None,
     in_bar: Annotated[int | None, typer.Option(help="Bar of B that lands on out_bar (default: planner)")] = None,
     overlap: Annotated[int | None, typer.Option(help="Blend length in bars (default: planner)")] = None,
-    kind: Annotated[str | None, typer.Option("--type", help="bass_swap_blend | filter_sweep | echo_out | drop_cut | acapella_overlay (default: planner picks)")] = None,
+    kind: Annotated[str | None, typer.Option("--type", help="bass_swap_blend | filter_sweep | stem_blend | melody_first | reverb_wash | double_drop | echo_out | drop_cut | beat_roll | tape_stop | acapella_overlay (default: planner picks)")] = None,
     stems: Annotated[bool, typer.Option(help="Separate stems: avoids vocal clashes, enables acapella_overlay")] = False,
     output: Annotated[Path | None, typer.Option("-o", help="Plan file to write")] = None,
 ) -> None:
@@ -103,7 +103,7 @@ def pair(
         transition = ranked[0].transition()
         transition.notes = [f"score {ranked[0].score:+.2f}"] + ranked[0].reasons
     else:
-        cut = kind in ("echo_out", "drop_cut")
+        cut = kind in ("echo_out", "drop_cut", "beat_roll", "tape_stop")
         length = 0 if cut else (overlap or 16)
         transition = Transition(type=kind or "bass_swap_blend", in_bar=in_bar or 0, overlap_bars=length,
                                 out_bar=out_bar if out_bar is not None else a.n_bars - max(length, 4))

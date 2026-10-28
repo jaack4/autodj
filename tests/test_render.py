@@ -225,3 +225,75 @@ def test_stem_blend_swaps_parts_and_carries_vocals(club_track):
     assert level(da, "vocals", w.end - 0.5 * bar) > 0.95  # A's vocals carry across the whole blend
     assert level(db, "vocals", late) < 0.05  # B's vocals wait
     assert level(da, "vocals", w.end + 1.5 * bar) == 0.0  # and A has finished a bar later
+
+
+def _tone_deck_signal(d, sr=8000, stems=None):
+    from autodj.render import _deck_signal
+
+    t = np.arange(int(300 * sr)) / sr
+    tone = np.stack([np.sin(2 * np.pi * 1000 * t)] * 2).astype(np.float32)
+    if stems:
+        stems = {n: tone * 0.25 for n in ("drums", "bass", "other", "vocals")}
+    return _deck_signal(d, tone, sr, stems)
+
+
+def _level(m0, sig, when, sr=8000, span=0.05):
+    i = int(when * sr) - m0
+    return float(np.sqrt(2 * np.mean(sig[0, i : i + int(span * sr)] ** 2))) if 0 <= i < sig.shape[1] else 0.0
+
+
+@pytest.mark.parametrize("kind", ["beat_roll", "tape_stop"])
+def test_cut_effects_end_in_silence_on_the_cut(club_track, kind):
+    from autodj.models import Transition
+    from autodj.render import apply_transition, place
+
+    plan = _plan([Transition(type=kind, out_bar=64, in_bar=16, overlap_bars=0)])
+    da, db = _decks(plan, [club_track(bpm=120.0), club_track(bpm=120.0)])
+    (w,) = place(plan, [da, db])
+    apply_transition(w)
+    m0, sig = _tone_deck_signal(da)
+    assert _level(m0, sig, w.start + 0.05) < 0.01  # A is gone after the cut
+    assert _level(m0, sig, w.start - 6 * w.beat) > 0.5  # and playing normally a bar and a half before
+
+
+def test_tape_stop_slows_down():
+    from autodj.render import _tape_stop
+
+    sr, beat = 8000, 0.5
+    t = np.arange(4 * sr) / sr
+    out = np.stack([np.sin(2 * np.pi * 400 * t)] * 2)
+    _tape_stop(out, t, stop=2.0, beat=beat, sr=sr)
+    seg = out[0, int(1.5 * sr) : int(2.0 * sr)]
+    crossings = np.where(np.diff(np.sign(seg)) != 0)[0]
+    early, late = np.diff(crossings[:20]).mean(), np.diff(crossings[-6:-1]).mean()
+    assert late > 2 * early  # the pitch (and speed) falls toward the stop
+
+
+def test_reverb_wash_leaves_a_tail(club_track):
+    from autodj.models import Transition
+    from autodj.render import WASH_TAIL_BARS, apply_transition, place
+
+    plan = _plan([Transition(type="reverb_wash", out_bar=80, in_bar=0, overlap_bars=16, swap_bar=8)])
+    da, db = _decks(plan, [club_track(bpm=120.0), club_track(bpm=120.0)])
+    (w,) = place(plan, [da, db])
+    apply_transition(w)
+    m0, sig = _tone_deck_signal(da)
+    assert da.offset + da.play_to == pytest.approx(w.end + WASH_TAIL_BARS * 4 * w.beat)
+    assert _level(m0, sig, w.end + 0.2, span=0.2) > 0.01  # reverb rings on after A's dry signal has gone
+
+
+def test_double_drop_layers_both_drops(club_track):
+    from autodj.models import Transition
+    from autodj.render import apply_transition, place
+
+    plan = _plan([Transition(type="double_drop", out_bar=64, in_bar=16, overlap_bars=16)])
+    da, db = _decks(plan, [club_track(bpm=120.0), club_track(bpm=120.0)])
+    (w,) = place(plan, [da, db])
+    apply_transition(w)
+    mid = (w.start + w.end) / 2
+    ma, sa = _tone_deck_signal(da, stems=True)
+    mb, sb = _tone_deck_signal(db, stems=True)
+    assert _level(ma, sa, mid) == pytest.approx(0.5, abs=0.03)  # A: drums + melody (bass and vocals out)
+    assert _level(mb, sb, mid) == pytest.approx(0.75, abs=0.03)  # B: everything but its drums
+    assert _level(mb, sb, w.end + 0.5) == pytest.approx(1.0, abs=0.03)  # then B in full
+    assert _level(ma, sa, w.end + 0.05) < 0.01

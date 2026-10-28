@@ -55,6 +55,9 @@ class Deck:
     filters: list[tuple[str, Breakpoints]] = field(default_factory=list)  # ("highpass"|"lowpass", (mix t, Hz))
     stem_gains: dict[str, Breakpoints] = field(default_factory=dict)  # drums / bass / other / vocals -> gains
     echo: "Echo | None" = None
+    wash: "Wash | None" = None
+    roll: float | None = None  # beat roll: mix time of the cut it rolls into
+    tape_stop: float | None = None  # tape stop: mix time A comes to a halt
     _map_in: np.ndarray = field(default_factory=lambda: np.zeros(0))
     _map_out: np.ndarray = field(default_factory=lambda: np.zeros(0))
 
@@ -171,7 +174,10 @@ def _cut(out: Deck, inc: Deck, t: float) -> None:
 
 
 INSTRUMENTAL = ("drums", "bass", "other")
-STEM_TRANSITIONS = ("acapella_overlay", "stem_blend")  # need the decks' separated stems
+STEM_TRANSITIONS = ("acapella_overlay", "stem_blend", "melody_first", "double_drop")  # need separated stems
+CUT_TYPES = ("echo_out", "drop_cut", "beat_roll", "tape_stop")
+WASH_TAIL_BARS = 2
+ROLL_PATTERN = (1, 1, 0.5, 0.5, 0.25, 0.25, 0.125, 0.125, 0.125, 0.125)  # beats; sums to one bar
 OVERLAY_BLEND_IN_BARS = 4  # B's beat fades in over the overlay's last bars
 OVERLAY_BLEND_OUT_BARS = 2  # A's beat fades out after the bass swap
 
@@ -188,6 +194,88 @@ def _acapella_overlay(out: Deck, inc: Deck, t0: float, t1: float, beat: float) -
     out.automation["low"] += [(t1 - SWAP_RAMP_S, 1.0), (t1, 0.0)]
     for band in ("mid", "high"):
         out.automation[band] += _fade(t1, t1 + OVERLAY_BLEND_OUT_BARS * bar, rising=False)
+
+
+@dataclass
+class Wash:
+    """A reverb on the outgoing deck that rises as it fades, leaving a tail."""
+
+    start: float
+    peak: float  # wet level reaches its maximum here (the swap)
+    end: float
+    tail: float  # seconds of reverb tail after the end
+
+
+def _melody_first(out: Deck, inc: Deck, t0: float, ts: float, beat: float) -> None:
+    """B's melody and vocals arrive over A's groove (A's own melody and vocals step aside);
+    the rhythm section swaps late, on ts."""
+    bar = 4 * beat
+    for stem in ("other", "vocals"):
+        inc.stem_gains[stem] = _fade(t0, ts, rising=True)
+    out.stem_gains["other"] = _fade(t0, ts, rising=False)
+    out.stem_gains["vocals"] = _fade(t0, t0 + 2 * bar, rising=False)
+    for stem in ("drums", "bass"):
+        inc.stem_gains[stem] = [(ts - SWAP_RAMP_S, 0.0), (ts, 1.0)]
+        out.stem_gains[stem] = [(ts - SWAP_RAMP_S, 1.0), (ts, 0.0)]
+    inc.automation["low"] += [(ts - SWAP_RAMP_S, 0.0), (ts, 1.0)]
+    out.automation["low"] += [(ts - SWAP_RAMP_S, 1.0), (ts, 0.0)]
+
+
+def _double_drop(out: Deck, inc: Deck, t0: float, t1: float) -> None:
+    """Both drops land together: A's drums and melody, B's bass, melody and vocals. A leaves at t1,
+    when B's drums take over."""
+    for stem in ("bass", "vocals"):
+        out.stem_gains[stem] = [(t0 - SWAP_RAMP_S, 1.0), (t0, 0.0)]
+    inc.stem_gains["drums"] = [(t1 - SWAP_RAMP_S, 0.0), (t1, 1.0)]
+    for band in BANDS:
+        out.automation[band] += [(t1 - CUT_FADE_S, 1.0), (t1, 0.0)]
+
+
+def _wash_tail(seg: np.ndarray, times: np.ndarray, w: Wash, sr: int) -> tuple[int, np.ndarray]:
+    """(start index, wet signal) for a reverb wash: full-wet reverb of the deck, rising to w.peak."""
+    i0 = int(np.clip(np.searchsorted(times, w.start), 0, seg.shape[1]))
+    i1 = int(np.clip(np.searchsorted(times, w.end), i0, seg.shape[1]))
+    padded = np.concatenate([seg[:, i0:i1], np.zeros((2, int(w.tail * sr)), np.float32)], axis=1)
+    reverb = pedalboard.Pedalboard([
+        pedalboard.HighpassFilter(cutoff_frequency_hz=300.0),
+        pedalboard.Reverb(room_size=0.92, damping=0.4, wet_level=1.0, dry_level=0.0, width=1.0),
+    ])
+    wet = reverb(padded.astype(np.float32), sr)
+    t = w.start + np.arange(wet.shape[1]) / sr
+    return i0, wet * np.interp(t, [w.start, w.peak], [0.0, 0.8])
+
+
+def _beat_roll(out: np.ndarray, times: np.ndarray, cut: float, beat: float, sr: int) -> None:
+    """Rebuild the bar before the cut as ever-shorter repeats of its first beat."""
+    b = int(round(beat * sr))
+    r0 = int(np.searchsorted(times, cut - 4 * beat))
+    if r0 + 4 * b > out.shape[1] or r0 < 0:
+        return
+    src = out[:, r0 : r0 + b].copy()
+    pieces = []
+    for length in ROLL_PATTERN:
+        piece = src[:, : max(8, int(round(length * b)))].copy()
+        edge = min(int(0.002 * sr), piece.shape[1] // 4)
+        if edge:
+            piece[:, :edge] *= np.linspace(0, 1, edge)
+            piece[:, -edge:] *= np.linspace(1, 0, edge)
+        pieces.append(piece)
+    roll = np.concatenate(pieces, axis=1)[:, : 4 * b]
+    out[:, r0 : r0 + roll.shape[1]] = roll
+
+
+def _tape_stop(out: np.ndarray, times: np.ndarray, stop: float, beat: float, sr: int) -> None:
+    """The beat before `stop` slows from full speed to a halt (and drops in pitch, like a turntable)."""
+    n = int(round(beat * sr))
+    r0 = int(np.searchsorted(times, stop - beat))
+    if r0 < 0 or r0 + n > out.shape[1]:
+        return
+    k = np.arange(n) / n
+    read = r0 + (k - k**2 / 2) * n  # position read at speed 1 - k
+    stopped = np.stack([np.interp(read, np.arange(out.shape[1]), ch) for ch in out])
+    fade = n // 10
+    stopped[:, -fade:] *= np.linspace(1, 0, fade)
+    out[:, r0 : r0 + n] = stopped
 
 
 def _stem_blend(out: Deck, inc: Deck, t0: float, t1: float, ts: float, beat: float) -> None:
@@ -227,6 +315,21 @@ def apply_transition(w: "TransitionWindow") -> None:
         _acapella_overlay(a, b, w.start, w.end, w.beat)
     elif tr.type == "stem_blend":
         _stem_blend(a, b, w.start, w.end, w.swap, w.beat)
+    elif tr.type == "melody_first":
+        _melody_first(a, b, w.start, w.swap, w.beat)
+    elif tr.type == "reverb_wash":
+        _bass_swap_blend(a, b, w.start, w.end, w.swap)
+        a.filters.append(("highpass", _sweep(w.swap, w.end, 20.0, 800.0)))
+        a.wash = Wash(w.start, w.swap, w.end, WASH_TAIL_BARS * 4 * w.beat)
+    elif tr.type == "double_drop":
+        _double_drop(a, b, w.start, w.end)
+    elif tr.type == "beat_roll":
+        _cut(a, b, w.start)
+        a.roll = w.start
+        a.filters.append(("highpass", _sweep(w.start - 4 * w.beat, w.start, 20.0, 1200.0)))
+    elif tr.type == "tape_stop":
+        _cut(a, b, w.start)
+        a.tape_stop = w.start
     else:
         raise ValueError(f"Unknown transition type: {tr.type}")
 
@@ -283,7 +386,7 @@ def _check_transition(tr: Transition, a: Deck, b: Deck) -> None:
         raise ValueError(f"out_bar {tr.out_bar} outside {Path(a.analysis.path).name} ({n_a} bars)")
     if not 0 <= tr.in_bar < n_b or tr.in_bar + tr.overlap_bars > n_b:
         raise ValueError(f"in_bar {tr.in_bar} + overlap doesn't fit {Path(b.analysis.path).name} ({n_b} bars)")
-    is_cut = tr.type in ("echo_out", "drop_cut")
+    is_cut = tr.type in CUT_TYPES
     if is_cut != (tr.overlap_bars == 0):
         raise ValueError(f"{tr.type} needs overlap_bars {'== 0' if is_cut else '> 0'}")
     if tr.swap_bar is not None and not is_cut and not 0 < tr.swap_bar < tr.overlap_bars:
@@ -358,8 +461,10 @@ def place(plan: MixPlan, decks: list[Deck]) -> list[TransitionWindow]:
         a.play_to = t1 - a.offset
         if tr.type == "echo_out":
             a.play_to += Echo(t0, bar / 4, tr.echo_delay_beats, tr.echo_feedback).tail + bar / 4
-        elif tr.type == "drop_cut":
+        elif tr.type in ("drop_cut", "beat_roll", "tape_stop", "double_drop"):
             a.play_to += CUT_FADE_S
+        elif tr.type == "reverb_wash":
+            a.play_to += WASH_TAIL_BARS * bar
         elif tr.type == "acapella_overlay":
             a.play_to += OVERLAY_BLEND_OUT_BARS * bar
         elif tr.type == "stem_blend":
@@ -398,8 +503,17 @@ def _deck_signal(d: Deck, audio: np.ndarray, sr: int, stems: dict[str, np.ndarra
             out += x * np.interp(times, ts, gs)
         else:
             out += x
+    beat = 60 / d.target_bpm
+    if d.roll is not None:
+        _beat_roll(out, times, d.roll, beat, sr)
+    if d.tape_stop is not None:
+        _tape_stop(out, times, d.tape_stop, beat, sr)
     if d.filters:
         out = _apply_filters(out, times, d.filters, sr)
+    if d.wash:
+        start, wet = _wash_tail(seg, times, d.wash, sr)
+        end = min(start + wet.shape[1], n)
+        out[:, start:end] += wet[:, : end - start]
     if d.echo:
         start, tail = _echo_tail(seg, times[0], d.echo, sr)
         end = min(start + tail.shape[1], n)

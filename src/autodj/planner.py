@@ -17,13 +17,14 @@ SPLICE_TOLERANCE_MS = 25.0
 UNCERTAIN_KEY = 0.03  # key confidence below this: don't trust the key to rule anything out
 
 
-BLENDS = ("bass_swap_blend", "filter_sweep", "stem_blend")
+BLENDS = ("bass_swap_blend", "filter_sweep", "stem_blend", "melody_first", "reverb_wash")
+NEEDS_STEMS = ("stem_blend", "melody_first", "double_drop", "acapella_overlay")
 STYLES = {  # transition types each style may use
-    "smooth": BLENDS,  # real mixing: long overlaps, nothing abrupt
+    "smooth": BLENDS + ("double_drop",),  # real mixing: overlaps, nothing abrupt
     "mixed": None,  # everything, including cuts, echo outs and acapella overlays
 }
 FULL_PLAY = 0.85  # playing this share of a track counts as playing all of it (outros fade anyway)
-CUTS = ("echo_out", "drop_cut")
+CUTS = ("echo_out", "drop_cut", "beat_roll", "tape_stop")
 OVERLAYS = ("acapella_overlay",)
 VOCAL_ON = 0.5  # bar_vocals above this counts as singing/rapping
 ACAPELLA_LENGTHS = (8, 16)
@@ -46,6 +47,8 @@ class Candidate:
     def describe(self) -> str:
         if self.kind in CUTS:
             return f"{self.kind}: A bar {self.out_bar} -> B bar {self.in_bar}"
+        if self.kind == "double_drop":
+            return f"double_drop: A's drop at bar {self.out_bar} with B's drop at bar {self.in_bar}, {self.overlap} bars"
         if self.kind in OVERLAYS:
             return f"{self.kind}: B's vocal from bar {self.in_bar} over A bar {self.out_bar}, {self.overlap} bars"
         return f"{self.kind}: A bar {self.out_bar} = B bar {self.in_bar}, {self.overlap} bars, swap at +{self.swap_bar}"
@@ -108,6 +111,13 @@ def _swap_bar(b: Analysis, in_bar: int, overlap: int) -> int:
     return half - half % 4 if half >= 4 else half
 
 
+def _share(values: list[float] | None, start: int, end: int, on: float = VOCAL_ON) -> float:
+    """Share of bars in [start, end) above `on` (0 if there's no data)."""
+    if values is None or end <= start:
+        return 0.0
+    return float(np.mean(np.array(values[start:end]) > on))
+
+
 def _mean_energy(x: Analysis, start: int, end: int) -> float:
     start, end = max(0, start), min(x.n_bars, end)
     return float(np.mean(x.bar_energy[start:end])) if end > start else 0.0
@@ -128,12 +138,12 @@ def score(a: Analysis, b: Analysis, c: Candidate, preferred_overlap: int, style:
     clash = key_distance(a, b) >= 3
     far_tempo = tempo_gap(a.bpm, b.bpm) > 0.06
     # A drop cut trades A's remaining track for B's drop by design, so coverage counts less.
-    coverage = 1.0 if c.kind != "drop_cut" else 0.5
+    coverage = 0.5 if c.kind in ("drop_cut", "beat_roll", "double_drop") else 1.0
     shortfall = max(0.0, FULL_PLAY - a_end / a.n_bars)
     add(-coverage * 2.5 * shortfall, f"plays only {a_end / a.n_bars:.0%} of A")
     add(-coverage * 2.0 * c.in_bar / b.n_bars, f"skips {c.in_bar / b.n_bars:.0%} of B")
     later_drops = [s for s in a.sections if s.label == "drop" and s.start_bar >= a_end]
-    if c.kind == "drop_cut":  # the drop at the cut point is replaced by B's, not lost
+    if c.kind in ("drop_cut", "beat_roll", "double_drop"):  # the drop at the cut point is replaced by B's
         later_drops = [s for s in later_drops if s.start_bar != c.out_bar]
     if later_drops:
         add(-0.5, "cuts A before one of its drops")
@@ -146,7 +156,7 @@ def score(a: Analysis, b: Analysis, c: Candidate, preferred_overlap: int, style:
     else:
         ea, eb = _mean_energy(a, c.out_bar - 4, c.out_bar), _mean_energy(b, c.in_bar, c.in_bar + 4)
     jump = eb - ea
-    if jump > 0.15 and c.kind != "drop_cut":  # a drop cut's jump from a build is the point
+    if jump > 0.15 and c.kind not in ("drop_cut", "beat_roll", "double_drop"):  # these jumps are the point
         add(-2.0 * (jump - 0.15), f"B comes in much more intense than A ({eb:.2f} vs {ea:.2f})")
     elif jump < -0.3:
         add(-1.0 * (-jump - 0.3), f"B comes in much quieter than A ({eb:.2f} vs {ea:.2f})")
@@ -162,6 +172,18 @@ def score(a: Analysis, b: Analysis, c: Candidate, preferred_overlap: int, style:
         eb = np.array(b.bar_energy[c.in_bar : b_end])
         mud = 2.0 * float(np.clip(ea + eb - 1.2, 0, None).mean())
         add(-mud * (1.0 if c.kind == "bass_swap_blend" else 0.5), "both tracks loud at once (mud)")
+        if c.kind == "melody_first":
+            add(0.15, "melody first: B's melody and vocals arrive over A's groove")
+            va = _share(a.bar_vocals, c.out_bar, a_end)
+            vb = _share(b.bar_vocals, c.in_bar, b_end)
+            if vb >= 0.5 and va <= 0.25:
+                add(0.3, "B's hook teased over A's beat")
+            if _mean_energy(a, c.out_bar, a_end) < 0.45:
+                add(-0.4, "A's groove is too thin to carry B's melody")
+        elif c.kind == "reverb_wash":
+            add(-0.05, "reverb wash: A dissolves into reverb as B rises (an effect: needs a reason)")
+            if _share(a.bar_vocals, c.out_bar, a_end) >= 0.5:
+                add(0.15, "A's vocals wash out nicely")
         if b_end in b.section_starts():
             add(0.5, "blend ends on a B section change")
             if b.section_at(b_end).label == "drop":
@@ -172,6 +194,8 @@ def score(a: Analysis, b: Analysis, c: Candidate, preferred_overlap: int, style:
             carried = float(np.mean(np.array(a.bar_vocals[swap:a_end]) > VOCAL_ON)) if a_end > swap else 0.0
             if carried >= 0.5:
                 add(0.4, f"A's vocals carry across B's beat ({carried:.0%} of the second half)")
+        elif c.kind == "melody_first" or c.kind == "reverb_wash":
+            pass  # A's vocals duck early / dissolve, so no clash
         elif a.bar_vocals is not None and b.bar_vocals is not None:  # stem blends hold B's vocals back
             va = np.array(a.bar_vocals[c.out_bar : a_end]) > VOCAL_ON
             vb = np.array(b.bar_vocals[c.in_bar : b_end]) > VOCAL_ON
@@ -182,7 +206,8 @@ def score(a: Analysis, b: Analysis, c: Candidate, preferred_overlap: int, style:
                 add(-2.0, f"{name}'s grid jumps inside the blend (splice/tempo change)")
         d = key_distance(a, b)
         if d >= 2:
-            clash_cost = 0.15 * (d - 1) * c.overlap / 8 * (0.5 if c.kind == "filter_sweep" else 1.0)
+            soften = {"filter_sweep": 0.5, "reverb_wash": 0.3}.get(c.kind, 1.0)
+            clash_cost = 0.15 * (d - 1) * c.overlap / 8 * soften
             add(-clash_cost, f"keys {d} steps apart for {c.overlap} bars")
         elif c.overlap == preferred_overlap:
             add(0.3, f"{c.overlap}-bar blend suits the keys")
@@ -206,6 +231,23 @@ def score(a: Analysis, b: Analysis, c: Candidate, preferred_overlap: int, style:
         add(-0.5 * a_labels.count("break") / c.overlap, "A's instrumental is a breakdown (little beat to sing over)")
         if not region_offset_ms(a, c.out_bar, a_end)[1]:
             add(-2.0, "A's grid jumps under the overlay (splice/tempo change)")
+    elif c.kind == "double_drop":
+        add(0.6, "double drop: both drops hit together")
+        if not any(s.label == "drop" and s.start_bar > c.out_bar for s in a.sections):
+            add(0.3, "it's A's final drop, so nothing of A is lost")
+        if tempo_gap(a.bpm, b.bpm) > 0.04:
+            add(-0.5, "drops at different tempos stretch badly together")
+    elif c.kind == "beat_roll":
+        add(-0.1, "beat roll: A stutters into the cut")
+        add(0.6, "rolls A's build straight into B's drop")
+        if clash or far_tempo:
+            add(0.3, "no overlap, so the key/tempo gap doesn't matter")
+    elif c.kind == "tape_stop":
+        add(-0.3, "tape stop: a dramatic full stop (use rarely)")
+        if b.section_at(c.in_bar).label == "drop":
+            add(0.3, "restarts straight into B's drop")
+        if clash or far_tempo:
+            add(0.5, "no overlap, so the key/tempo gap doesn't matter")
     elif c.kind == "echo_out":
         add(-0.4, "echo out (a blend is smoother when it works)")
         if clash or far_tempo:
@@ -234,12 +276,17 @@ def _blend_candidates(a: Analysis, b: Analysis, min_out_bar: int, style: str = "
         for kind in BLENDS:
             if kind == "filter_sweep" and overlap not in (8, 16, 32):
                 continue
-            if kind == "stem_blend" and (a.bar_vocals is None or b.bar_vocals is None
-                                         or key_distance(a, b) > 1 or overlap < 8):
+            if kind in NEEDS_STEMS and (a.bar_vocals is None or b.bar_vocals is None
+                                        or key_distance(a, b) > 1 or overlap < 8):
                 continue  # needs stems, and A's parts must sit in key over B's
+            if kind == "reverb_wash" and overlap > 16:
+                continue
             for o in outs:
                 for i in ins:
-                    c = Candidate(out_bar=o, in_bar=i, overlap=overlap, swap_bar=_swap_bar(b, i, overlap), kind=kind)
+                    swap = _swap_bar(b, i, overlap)
+                    if kind == "melody_first":  # the rhythm swaps late: B's top rides A's groove first
+                        swap = max(4, (overlap * 3 // 4) - (overlap * 3 // 4) % 4)
+                    c = Candidate(out_bar=o, in_bar=i, overlap=overlap, swap_bar=swap, kind=kind)
                     found.append(score(a, b, c, preferred_overlap=overlaps[0], style=style))
     return found
 
@@ -261,6 +308,30 @@ def _cut_candidates(a: Analysis, b: Analysis, min_out_bar: int) -> list[Candidat
     for o in outs:
         for i in ins:
             found.append(score(a, b, Candidate(o, i, 0, None, kind="drop_cut"), 0))
+            found.append(score(a, b, Candidate(o, i, 0, None, kind="beat_roll"), 0))
+    # tape_stop: stop A dead at the end of one of its drops, then B starts.
+    outs = {s.end_bar for s in a.sections if s.label == "drop" and lo <= s.end_bar < a.n_bars}
+    ins = {s.start_bar for s in b.sections if s.start_bar <= MAX_INCOMING_SKIP * b.n_bars} | {0}
+    for o in outs:
+        for i in ins:
+            found.append(score(a, b, Candidate(o, i, 0, None, kind="tape_stop"), 0))
+    return found
+
+
+def _double_drop_candidates(a: Analysis, b: Analysis, min_out_bar: int) -> list[Candidate]:
+    """A's drop and B's drop start on the same downbeat and play together for a few bars."""
+    if a.bar_vocals is None or b.bar_vocals is None or key_distance(a, b) > 1:
+        return []
+    found = []
+    lo = max(a.n_bars // 3, min_out_bar)
+    a_drops = [s for s in a.sections if s.label == "drop" and s.start_bar >= lo]
+    b_drops = [s for s in b.sections if s.label == "drop" and s.start_bar <= 0.6 * b.n_bars]
+    for sa in a_drops:
+        for sb in b_drops:
+            for length in (16, 8):
+                if sa.start_bar + length <= sa.end_bar and sb.start_bar + length <= sb.end_bar:
+                    found.append(score(a, b, Candidate(sa.start_bar, sb.start_bar, length, None, kind="double_drop"), 0))
+                    break
     return found
 
 
@@ -287,7 +358,7 @@ def candidates(a: Analysis, b: Analysis, min_out_bar: int = 0, kinds: tuple[str,
 
     style 'smooth' only offers real blends (kinds, if given, narrows it further).
     """
-    found = _blend_candidates(a, b, min_out_bar, style)
+    found = _blend_candidates(a, b, min_out_bar, style) + _double_drop_candidates(a, b, min_out_bar)
     if style != "smooth":
         found += _cut_candidates(a, b, min_out_bar) + _overlay_candidates(a, b, min_out_bar)
     if kinds:

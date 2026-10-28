@@ -99,8 +99,11 @@ def test_short_tracks_fall_back_to_an_echo_out():
 
 
 def test_smooth_style_only_blends(club_track):
+    from autodj.planner import STYLES
+
     found = candidates(club_track(key="8A"), club_track(key="2B"), style="smooth")
-    assert found and {c.kind for c in found} <= {"bass_swap_blend", "filter_sweep"}
+    assert found and {c.kind for c in found} <= set(STYLES["smooth"])
+    assert not {c.kind for c in found} & {"drop_cut", "echo_out", "beat_roll", "tape_stop"}
 
 
 def test_no_loud_entry_over_a_quiet_outro():

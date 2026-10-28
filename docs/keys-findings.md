@@ -81,3 +81,10 @@ Result: 3 overlays, 2 drop cuts, an echo-out, a filter sweep and a bass-swap ble
 - On `mysongs`: all 8 transitions are stem blends (Ur Alive → gettin' hott scores highest, +2.33,
   with Ur Alive's vocal carried over). 2 mashups: Uncaged's vocal phrase over shyne 4 me's drop, and
   Under Your Spell's sung drop over how2fly's second drop.
+
+## Round 3: more transition types
+New: `melody_first`, `reverb_wash`, `double_drop` (smooth style) and `beat_roll`, `tape_stop` (mixed style).
+The smooth-style variety penalty went up to (0.35, 0.1, 0.05) so the new types actually get used. Reverb
+wash has a slightly negative base, so it needs a reason (vocals to wash out, or a key clash) to beat a
+plain blend. Demos in `output/demos/`. On `mysongs`: 4 stem blends, 3 melody-first, 1 double drop
+(Uncaged → Under Your Spell), plus the 2 mashups.

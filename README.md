@@ -78,6 +78,22 @@ uv run autodj pair a.mp3 b.mp3 --type echo_out        # or bass_swap_blend, filt
 uv run autodj render "output/plans/a -- b.echo_out.json"
 ```
 
+**Transition types** (`pair --type ...`; the planner picks automatically otherwise)
+
+| Type | What you hear | Style |
+|---|---|---|
+| `stem_blend` | Parts swap one at a time: B's drums creep in, drums+bass swap on a downbeat, melodies crossfade while A's vocals carry over B's beat | smooth (needs `--stems`) |
+| `melody_first` | B's melody and vocals arrive over A's groove; the rhythm swaps late | smooth (needs `--stems`) |
+| `double_drop` | Both drops hit together (A's drums + melody, B's bass + vocals), then A drops out | smooth (needs `--stems`) |
+| `bass_swap_blend` | Classic EQ blend: B's highs and mids fade in, basslines swap on a downbeat | smooth |
+| `filter_sweep` | A high-passes away while B's low-pass opens | smooth |
+| `reverb_wash` | A dissolves into a big filtered reverb as B rises; the tail rings into B | smooth |
+| `beat_roll` | A's last bar stutters (1 → ½ → ¼ → ⅛ beat) into B's drop | mixed |
+| `drop_cut` | A's build cuts straight into B's drop | mixed |
+| `echo_out` | A's last beat echoes out; B starts on the 1 | mixed |
+| `tape_stop` | A slows to a halt like a vinyl brake, then B starts | mixed |
+| `acapella_overlay` | B's vocal over A's instrumental, then B's beat blends in | mixed (needs `--stems`) |
+
 **4. Let Claude direct the set** (optional, needs `ANTHROPIC_API_KEY`)
 ```sh
 uv run autodj direct output/sets/new.json            # -> output/sets/new.directed.json

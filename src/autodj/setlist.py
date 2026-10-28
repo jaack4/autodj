@@ -195,7 +195,7 @@ def build_plan(
 
 
 # (same type as the previous transition, as the one before that, per earlier use anywhere in the set)
-VARIETY = {"mixed": (0.5, 0.25, 0.15), "smooth": (0.15, 0.05, 0.0)}
+VARIETY = {"mixed": (0.5, 0.25, 0.15), "smooth": (0.35, 0.1, 0.05)}
 
 
 def _varied_transition(a: Analysis, b: Analysis, min_out: int, history: list[str], style: str = "smooth") -> Candidate:
