@@ -1,3 +1,5 @@
+from typing import Literal
+
 from pydantic import BaseModel
 
 
@@ -33,3 +35,25 @@ class Analysis(BaseModel):
     bar_energy: list[float]
     bar_novelty: list[float]
     sections: list[Section]
+
+
+class PlanTrack(BaseModel):
+    path: str
+    start_bar: int = 0  # first track only: where playback begins
+
+
+class Transition(BaseModel):
+    type: Literal["bass_swap_blend"] = "bass_swap_blend"
+    out_bar: int  # bar of the outgoing track where the overlap starts
+    in_bar: int = 0  # bar of the incoming track that lands on out_bar
+    overlap_bars: int = 16
+    swap_bar: int | None = None  # bar within the overlap where basslines swap (default: halfway)
+
+
+class MixPlan(BaseModel):
+    version: int = 1
+    bpm: float  # constant master tempo; every track is time-stretched to it
+    sample_rate: int = 44100
+    target_lufs: float = -9.0  # per-track loudness before the master limiter
+    tracks: list[PlanTrack]
+    transitions: list[Transition]  # one per adjacent pair

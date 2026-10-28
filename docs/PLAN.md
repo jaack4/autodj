@@ -94,8 +94,8 @@ Pydantic models, serialized to JSON.
 ## Tech stack
 - **Python 3.12.** The ML audio stack (torch, madmom, natten) usually lags the latest Python.
 - `uv` for environment and dependencies, `typer` for the CLI, `pydantic` for models.
-- Audio: `librosa`, `soundfile`, `pyrubberband` (needs `brew install rubberband`),
-  `pedalboard`, `pyloudnorm`, `demucs`, plus `allin1` and/or `beat_this` (to evaluate in M0).
+- Audio: `librosa`, `soundfile`, `pedalboard` (Rubber Band time-stretching, R2 engine; limiter),
+  `scipy` (band split), `pyloudnorm`, `beat_this` (downbeats); `demucs` in M4.
 - LLM (M5, optional): the Claude API, with structured output for choosing transitions.
 
 ## Milestones
@@ -103,11 +103,12 @@ Pydantic models, serialized to JSON.
       Check beat, downbeat and section accuracy by ear or with clicks. Decide
       between `allin1` and `beat_this`, and decide whether a phrase-boundary
       fallback is needed. *Biggest risk; do this first.*
-      **In progress. See [M0-findings.md](M0-findings.md).** Grid and
-      segmentation work; downbeats still need checking by ear and with `beat_this`.
+      **Mostly done. See [M0-findings.md](M0-findings.md).** Beats, bars and
+      sections verified by ear on 2 tracks; more tracks pending.
 - [ ] **M1: Two-track render.** Hand-written MixPlan for A→B with
       `bass_swap_blend` at hand-picked bars. This proves time-stretching,
       alignment, automation and export.
+      **Engine done. See [M1-findings.md](M1-findings.md).** Waiting on a by-ear check.
 - [ ] **M2: Automatic transition points.** Choose phrase-aligned out- and
       in-points from the analysis.
 - [ ] **M3: Full set.** Ordering by compatibility and energy arc, render N

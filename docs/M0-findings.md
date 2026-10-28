@@ -78,6 +78,6 @@ checked by ear. 20.3M parameters, matching the published model.
 
 ## Exit criteria for M0
 - [x] Get `beat_this` weights and compare its downbeats with the heuristic.
-- [ ] Re-listen to dashstar `clicks.wav` (126.03 BPM grid). Bars and tones should be right up to ~108 s; expect ~100 ms lateness after the splice.
+- [x] Re-listen to dashstar `clicks.wav` (126.03 BPM grid): beats confirmed good.
 - [ ] Compare BPM and key with djay's analysis of the same tracks.
 - [ ] Analyze 3–5 more tracks.

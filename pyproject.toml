@@ -13,8 +13,10 @@ dependencies = [
     "librosa>=1.0.0",
     "matplotlib>=3.11.2",
     "numpy>=2.5.4",
+    "pedalboard>=0.9.26",
     "pydantic>=2.14.1",
     "pyloudnorm>=0.2.0",
+    "scipy>=1.18.1",
     "soundfile>=0.14.0",
     "typer>=0.27.3",
 ]

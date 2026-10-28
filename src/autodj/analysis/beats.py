@@ -130,31 +130,47 @@ def downbeat_phase_heuristic(y: np.ndarray, sr: int, grid_beats: np.ndarray) -> 
     return int(np.argmax([score[p::4].mean() for p in range(4)]))
 
 
+def _kick_env(y: np.ndarray, sr: int, hop: int = 128) -> tuple[np.ndarray, float]:
+    return librosa.onset.onset_strength(y=y, sr=sr, hop_length=hop, fmax=200, n_mels=32), sr / hop
+
+
+def _best_shift(env: np.ndarray, fps: float, beats: np.ndarray, period: float, center: float = 0.0) -> tuple[float, float]:
+    """Shift within +-1/4 beat of `center` that best lines `beats` up with onsets: (shift s, peak/mean score).
+
+    +-1/4 beat keeps off-beat hi-hats (exactly 1/2 beat away) from capturing the alignment.
+    """
+    shifts = np.linspace(-0.25, 0.25, 51) * period
+    frames = np.round((beats[None, :] + center + shifts[:, None]) * fps).astype(int)
+    score = env[np.clip(frames, 0, len(env) - 1)].sum(axis=1)
+    k = int(score.argmax())
+    return center + float(shifts[k]), float(score[k] / (score.mean() + 1e-9))
+
+
 def grid_alignment(y: np.ndarray, sr: int, beats: np.ndarray, period: float, window: int = 16) -> tuple[float, float]:
-    """Best onset alignment of each `window`-beat stretch of the grid, followed across the track.
+    """Best kick-band alignment of each `window`-beat stretch of the grid, followed across the track.
 
     Returns (median offset ms, drift ms). Each window searches near the previous window's
     offset, so a grid that slides by whole beats over the track accumulates large drift
-    instead of silently matching the wrong onsets. Uses the kick/bass band and a +-1/4 beat
-    search so off-beat hi-hats (exactly 1/2 beat away) can't capture the alignment.
+    instead of silently matching the wrong onsets.
     """
-    hop = 128
-    env = librosa.onset.onset_strength(y=y, sr=sr, hop_length=hop, fmax=200, n_mels=32)
-    fps = sr / hop
-    shifts = np.linspace(-0.25, 0.25, 51) * period
+    env, fps = _kick_env(y, sr)
     offsets: list[float] = []
     for start in range(0, len(beats) - window + 1, window):
-        center = offsets[-1] if offsets else 0.0
-        frames = np.round((beats[start : start + window][None, :] + center + shifts[:, None]) * fps).astype(int)
-        score = env[np.clip(frames, 0, len(env) - 1)].sum(axis=1)
-        if score.max() > 0:
-            offsets.append(center + shifts[score.argmax()])
+        shift, _ = _best_shift(env, fps, beats[start : start + window], period, offsets[-1] if offsets else 0.0)
+        offsets.append(shift)
     if len(offsets) < 3:
         return 0.0, 0.0
     offsets = np.array(offsets)
     third = max(1, len(offsets) // 3)
     drift = np.median(offsets[-third:]) - np.median(offsets[:third])
     return float(np.median(offsets) * 1000), float(drift * 1000)
+
+
+def onset_offset(y: np.ndarray, sr: int, beats: np.ndarray, period: float) -> tuple[float, float]:
+    """Single kick-band offset (ms) of a stretch of audio vs a grid, and its confidence (peak/mean, ~1 = no kicks)."""
+    env, fps = _kick_env(y, sr)
+    shift, confidence = _best_shift(env, fps, beats, period)
+    return shift * 1000, confidence
 
 
 def detect_grid(y: np.ndarray, sr: int, duration: float, backend: str, bpm_hint: float | None = None) -> BeatGrid:
