@@ -264,3 +264,76 @@ def render(
     viewer = write_viewer(output.with_suffix(".html"), mp3, plan, decks, windows, checks)
     typer.echo(f"mix: {output}  ({mix.shape[1] / plan.sample_rate / 60:.1f} min; MP3: {mp3.name})")
     typer.echo(f"viewer: {viewer}  (open it in a browser to listen and jump between transitions)")
+
+
+def _audio_files(sources: list[Path]) -> list[Path]:
+    from autodj.setlist import AUDIO_EXTENSIONS, load_playlist
+
+    files: list[Path] = []
+    for src in sources:
+        if src.is_dir() or src.suffix.lower() in (".yaml", ".yml"):
+            files += [Path(t.path) for t in load_playlist(src)[1]]
+        elif src.suffix.lower() in AUDIO_EXTENSIONS:
+            files.append(src)
+    return files
+
+
+@app.command()
+def label(
+    sources: Annotated[list[Path], typer.Argument(exists=True, help="Audio files, folders or playlists")],
+    port: Annotated[int, typer.Option(help="Local port")] = 8765,
+) -> None:
+    """Open a page in your browser for marking where sections start, by ear (saved to labels/)."""
+    import webbrowser
+
+    from autodj.analysis import analyze_file
+    from autodj.labeler import LABELS_DIR, serve
+
+    analyses = []
+    for f in _audio_files(sources):
+        typer.echo(f"analyzing {f.name}", err=True)
+        analyses.append(analyze_file(f))
+    if not analyses:
+        raise typer.BadParameter("no audio files found")
+    server = serve(analyses, port)
+    url = f"http://127.0.0.1:{port}/"
+    typer.echo(f"labelling {len(analyses)} track(s) at {url}  (labels save to {LABELS_DIR}/; Ctrl+C to stop)")
+    webbrowser.open(url)
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        typer.echo("stopped")
+
+
+@app.command(name="eval-sections")
+def eval_sections(
+    labels_dir: Annotated[Path, typer.Argument(help="Folder of label files from `autodj label`")] = Path("labels"),
+    tolerance: Annotated[float, typer.Option(help="Boundary tolerance in bars")] = 1.0,
+) -> None:
+    """Score the section detector against your hand labels."""
+    import json
+
+    from autodj.analysis import analyze_file
+    from autodj.sections_eval import score_track, summarize
+
+    files = sorted(labels_dir.glob("*.json"))
+    if not files:
+        raise typer.BadParameter(f"no label files in {labels_dir}/ (make some with `autodj label`)")
+    scores = []
+    typer.echo(f"{'track':40s} {'boundaries P / R / F1':>24s} {'labels':>8s}")
+    for f in files:
+        data = json.loads(f.read_text())
+        if not data["sections"] or not Path(data["path"]).exists():
+            continue
+        a = analyze_file(Path(data["path"]))
+        s = score_track(a, data["sections"], Path(data["path"]).stem, tolerance)
+        scores.append(s)
+        typer.echo(f"{s.name[:40]:40s} {s.precision:6.0%} / {s.recall:4.0%} / {s.f1:4.0%} {s.label_accuracy:8.0%}")
+    if not scores:
+        raise typer.BadParameter("no usable label files")
+    total = summarize(scores)
+    typer.secho(f"{'ALL (' + str(len(scores)) + ' tracks)':40s} {total.precision:6.0%} / {total.recall:4.0%} / "
+                f"{total.f1:4.0%} {total.label_accuracy:8.0%}", bold=True)
+    typer.echo("\nmost common label mix-ups (your label -> detected, in bars):")
+    for (t, p), n in sorted(((k, v) for k, v in total.confusion.items() if k[0] != k[1]), key=lambda kv: -kv[1])[:6]:
+        typer.echo(f"  {t:>6s} -> {p:<6s} {n}")

@@ -21,3 +21,6 @@ wheels/
 # Analysis cache and rendered output
 .cache/
 output/
+
+# Hand-labelled sections (personal; see `autodj label`)
+labels/
