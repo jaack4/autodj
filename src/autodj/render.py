@@ -170,12 +170,21 @@ def _cut(out: Deck, inc: Deck, t: float) -> None:
         inc.automation[band] += [(t - CUT_FADE_S, 0.0), (t, 1.0)]
 
 
+OVERLAY_BLEND_IN_BARS = 4  # B's beat fades in over the overlay's last bars
+OVERLAY_BLEND_OUT_BARS = 2  # A's beat fades out after the bass swap
+
+
 def _acapella_overlay(out: Deck, inc: Deck, t0: float, t1: float, beat: float) -> None:
-    """A's vocals duck as B's acapella starts over A's instrumental; at t1 B's beat replaces A's."""
+    """A's vocals duck as B's acapella starts over A's instrumental. Over the last bars B's beat
+    fades in (no bass yet), the basslines swap on the overlay's final downbeat, then A fades out."""
+    bar = 4 * beat
+    blend_in = max(t0, t1 - OVERLAY_BLEND_IN_BARS * bar)
     out.stem_gains.setdefault("vocals", []).extend([(t0 - beat, 1.0), (t0, 0.0)])
-    inc.stem_gains.setdefault("instrumental", []).extend([(t1 - CUT_FADE_S, 0.0), (t1, 1.0)])
-    for band in BANDS:
-        out.automation[band] += [(t1 - CUT_FADE_S, 1.0), (t1, 0.0)]
+    inc.stem_gains.setdefault("instrumental", []).extend(_fade(blend_in, t1, rising=True))
+    inc.automation["low"] += [(t1 - SWAP_RAMP_S, 0.0), (t1, 1.0)]
+    out.automation["low"] += [(t1 - SWAP_RAMP_S, 1.0), (t1, 0.0)]
+    for band in ("mid", "high"):
+        out.automation[band] += _fade(t1, t1 + OVERLAY_BLEND_OUT_BARS * bar, rising=False)
 
 
 def apply_transition(w: "TransitionWindow") -> None:
@@ -325,8 +334,10 @@ def place(plan: MixPlan, decks: list[Deck]) -> list[TransitionWindow]:
         a.play_to = t1 - a.offset
         if tr.type == "echo_out":
             a.play_to += Echo(t0, bar / 4, tr.echo_delay_beats, tr.echo_feedback).tail + bar / 4
-        elif tr.type in ("drop_cut", "acapella_overlay"):
+        elif tr.type == "drop_cut":
             a.play_to += CUT_FADE_S
+        elif tr.type == "acapella_overlay":
+            a.play_to += OVERLAY_BLEND_OUT_BARS * bar
         windows.append(TransitionWindow(tr, t0, ts, t1, bar / 4, a, b))
     decks[-1].play_to = decks[-1].to_out(decks[-1].analysis.duration)
     return windows

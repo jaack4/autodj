@@ -121,6 +121,7 @@ def build_set(
     bpm: Annotated[float | None, typer.Option(help="Lock every track to this tempo")] = None,
     stems: Annotated[bool, typer.Option(help="Separate stems: avoids vocal clashes, enables acapella_overlay")] = False,
     max_shift: Annotated[int, typer.Option(help="Max pitch shift (semitones) to match keys; 0 turns it off")] = 2,
+    style: Annotated[str, typer.Option(help="smooth: long real blends only | mixed: also cuts, echo outs, acapella overlays")] = "smooth",
     director: Annotated[bool, typer.Option(help="Also ask Claude to pick transitions and narrate (needs ANTHROPIC_API_KEY)")] = False,
     output: Annotated[Path | None, typer.Option("-o", help="Plan file to write")] = None,
 ) -> None:
@@ -132,7 +133,10 @@ def build_set(
     def log(msg: str) -> None:
         typer.secho(msg, err=True, fg="yellow" if msg.lstrip().startswith(("warning", "skipped")) else None)
 
-    plan = build_plan(source, keep_order=keep_order, arc=arc, bpm=bpm, stems=stems, log=log, max_shift=max_shift)
+    if style not in ("smooth", "mixed"):
+        raise typer.BadParameter("style must be smooth or mixed")
+    plan = build_plan(source, keep_order=keep_order, arc=arc, bpm=bpm, stems=stems, log=log, max_shift=max_shift,
+                      style=style)
     typer.echo("")
     from autodj.camelot import shift_key
 

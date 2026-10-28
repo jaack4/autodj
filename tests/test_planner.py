@@ -96,3 +96,19 @@ def test_short_tracks_fall_back_to_an_echo_out():
     tiny = make_analysis([("intro", 0, 1, 0.3), ("outro", 1, 5, 0.9)])
     c = best_transition(tiny, tiny)
     assert c.kind == "echo_out" and c.out_bar < tiny.n_bars
+
+
+def test_smooth_style_only_blends(club_track):
+    found = candidates(club_track(key="8A"), club_track(key="2B"), style="smooth")
+    assert found and {c.kind for c in found} <= {"bass_swap_blend", "filter_sweep"}
+
+
+def test_no_loud_entry_over_a_quiet_outro():
+    # A ends with a long quiet outro; B's intro is loud. The planner should leave A before its fade.
+    a = make_analysis([("intro", 0, 16, 0.4), ("drop", 16, 48, 0.9), ("body", 48, 80, 0.7),
+                       ("outro", 80, 112, 0.1)])
+    b = make_analysis([("intro", 0, 16, 0.7), ("drop", 16, 48, 0.95), ("outro", 48, 64, 0.3)])
+    c = best_transition(a, b, style="smooth")
+    assert c.out_bar + c.overlap <= 80  # blends out of A's body, not its faded outro
+    from_outro = [x for x in candidates(a, b, style="smooth") if x.out_bar >= 80]
+    assert from_outro and all(any("faded" in r or "intense" in r for r in x.reasons) for x in from_outro)

@@ -88,7 +88,7 @@ def build_options(analyses: list[Analysis], plan: MixPlan, per_transition: int =
     """The planner's current pick, the best of each transition type, then the next best overall."""
     menus = []
     for k, (a, b, current) in enumerate(zip(analyses, analyses[1:], plan.transitions)):
-        ranked = candidates(a, b)
+        ranked = candidates(a, b, style=plan.style)
         picked: list[Candidate] = []
 
         def take(c: Candidate) -> None:

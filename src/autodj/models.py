@@ -95,6 +95,7 @@ class MixPlan(BaseModel):
     version: int = 2
     name: str = "mix"
     bpm: float | None = None  # if set, every track is locked to this tempo (no ramps)
+    style: str = "smooth"  # "smooth": real blends only; "mixed": also cuts, echo outs, acapella overlays
     sample_rate: int = 44100
     target_lufs: float = -9.0  # per-track loudness before the master limiter
     tracks: list[PlanTrack]

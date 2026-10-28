@@ -62,7 +62,9 @@ the 1, and cuts landing on the 1.
 Options: `--stems` (separates stems with Demucs, ~30 s per track: better keys
 and sections, avoids vocal clashes, enables acapella overlays), `--keep-order`,
 `--arc flat|warmup_peak`, `--bpm 126` (lock everything to one tempo),
-`--max-shift 2` (pitch-shift tracks up to 2 semitones so keys match; 0 = off).
+`--max-shift 2` (pitch-shift tracks up to 2 semitones so keys match; 0 = off),
+`--style smooth` (default: long, real blends only) or `--style mixed` (also drop
+cuts, echo outs and acapella overlays).
 Keys you know (from djay, Rekordbox, Beatport...) can go in a playlist file and
 override detection. `autodj eval-keys <folder>` compares key detectors against
 references in `labels/keys.json` (see [docs/keys-findings.md](docs/keys-findings.md)).

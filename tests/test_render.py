@@ -171,20 +171,26 @@ def test_overlap_must_match_transition_type(club_track):
 
 def test_acapella_overlay_mixes_stems(club_track):
     from autodj.models import Transition
-    from autodj.render import _deck_signal, apply_transition, place
+    from autodj.render import OVERLAY_BLEND_OUT_BARS, _deck_signal, apply_transition, place
 
     plan = _plan([Transition(type="acapella_overlay", out_bar=64, in_bar=0, overlap_bars=16)])
     da, db = _decks(plan, [club_track(bpm=120.0), club_track(bpm=120.0)])
     (w,) = place(plan, [da, db])
     apply_transition(w)
     sr = 8000
-    n = int(300 * sr)
-    full, vocals = np.ones((2, n), np.float32), np.full((2, n), 0.25, np.float32)  # instrumental = 0.75
+    t = np.arange(int(300 * sr)) / sr
+    tone = np.sin(2 * np.pi * 1000 * t).astype(np.float32)  # mid band, untouched by bass swaps
+    full, vocals = np.stack([tone, tone]), np.stack([tone, tone]) * 0.25  # instrumental = 0.75
     ma, sa = _deck_signal(da, full, sr, vocals)
     mb, sb = _deck_signal(db, full, sr, vocals)
-    at = lambda m0, sig, t: sig[0, int(t * sr) - m0]
+
+    def level(m0, sig, when):
+        i = int(when * sr) - m0
+        return float(np.sqrt(2 * np.mean(sig[0, i : i + sr // 10] ** 2)))
+
     mid = (w.start + w.end) / 2
-    assert at(ma, sa, mid) == pytest.approx(0.75, abs=0.02)  # A: instrumental only
-    assert at(mb, sb, mid) == pytest.approx(0.25, abs=0.02)  # B: acapella only
-    assert at(mb, sb, w.end + 1) == pytest.approx(1.0, abs=0.02)  # then B in full
-    assert da.offset + da.play_to <= w.end + 0.01  # and A is gone
+    assert level(ma, sa, mid) == pytest.approx(0.75, abs=0.03)  # A: instrumental only
+    assert level(mb, sb, mid) == pytest.approx(0.25, abs=0.03)  # B: acapella only
+    assert level(mb, sb, w.end - 2 * w.beat) > 0.4  # B's beat fading in before the end
+    assert level(mb, sb, w.end + 1) == pytest.approx(1.0, abs=0.03)  # then B in full
+    assert da.offset + da.play_to == pytest.approx(w.end + OVERLAY_BLEND_OUT_BARS * 4 * w.beat)  # A fades out

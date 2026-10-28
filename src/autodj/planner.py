@@ -18,6 +18,11 @@ UNCERTAIN_KEY = 0.03  # key confidence below this: don't trust the key to rule a
 
 
 BLENDS = ("bass_swap_blend", "filter_sweep")
+STYLES = {  # transition types each style may use
+    "smooth": BLENDS,  # real mixing: long overlaps, nothing abrupt
+    "mixed": None,  # everything, including cuts, echo outs and acapella overlays
+}
+FULL_PLAY = 0.85  # playing this share of a track counts as playing all of it (outros fade anyway)
 CUTS = ("echo_out", "drop_cut")
 OVERLAYS = ("acapella_overlay",)
 VOCAL_ON = 0.5  # bar_vocals above this counts as singing/rapping
@@ -103,7 +108,12 @@ def _swap_bar(b: Analysis, in_bar: int, overlap: int) -> int:
     return half - half % 4 if half >= 4 else half
 
 
-def score(a: Analysis, b: Analysis, c: Candidate, preferred_overlap: int) -> Candidate:
+def _mean_energy(x: Analysis, start: int, end: int) -> float:
+    start, end = max(0, start), min(x.n_bars, end)
+    return float(np.mean(x.bar_energy[start:end])) if end > start else 0.0
+
+
+def score(a: Analysis, b: Analysis, c: Candidate, preferred_overlap: int, style: str = "mixed") -> Candidate:
     reasons: list[str] = []
     total = 0.0
 
@@ -119,7 +129,8 @@ def score(a: Analysis, b: Analysis, c: Candidate, preferred_overlap: int) -> Can
     far_tempo = tempo_gap(a.bpm, b.bpm) > 0.06
     # A drop cut trades A's remaining track for B's drop by design, so coverage counts less.
     coverage = 1.0 if c.kind != "drop_cut" else 0.5
-    add(coverage * (2.0 * a_end / a.n_bars - 2.0), f"plays {a_end / a.n_bars:.0%} of A")
+    shortfall = max(0.0, FULL_PLAY - a_end / a.n_bars)
+    add(-coverage * 2.5 * shortfall, f"plays only {a_end / a.n_bars:.0%} of A")
     add(-coverage * 2.0 * c.in_bar / b.n_bars, f"skips {c.in_bar / b.n_bars:.0%} of B")
     later_drops = [s for s in a.sections if s.label == "drop" and s.start_bar >= a_end]
     if c.kind == "drop_cut":  # the drop at the cut point is replaced by B's, not lost
@@ -128,6 +139,19 @@ def score(a: Analysis, b: Analysis, c: Candidate, preferred_overlap: int) -> Can
         add(-0.5, "cuts A before one of its drops")
     if a_end in a.section_starts():
         add(0.5, "A leaves at a section boundary")
+
+    # Energy match: what B brings in should sit near what A is doing at that moment.
+    if c.overlap:
+        ea, eb = _mean_energy(a, c.out_bar, a_end), _mean_energy(b, c.in_bar, b_end)
+    else:
+        ea, eb = _mean_energy(a, c.out_bar - 4, c.out_bar), _mean_energy(b, c.in_bar, c.in_bar + 4)
+    jump = eb - ea
+    if jump > 0.15 and c.kind != "drop_cut":  # a drop cut's jump from a build is the point
+        add(-2.0 * (jump - 0.15), f"B comes in much more intense than A ({eb:.2f} vs {ea:.2f})")
+    elif jump < -0.3:
+        add(-1.0 * (-jump - 0.3), f"B comes in much quieter than A ({eb:.2f} vs {ea:.2f})")
+    if c.overlap and ea < 0.25:
+        add(-0.5, "A has already faded out")
 
     if c.kind in BLENDS:
         a_labels = [a.section_at(k).label for k in range(c.out_bar, a_end)]
@@ -156,6 +180,8 @@ def score(a: Analysis, b: Analysis, c: Candidate, preferred_overlap: int) -> Can
             add(-clash_cost, f"keys {d} steps apart for {c.overlap} bars")
         elif c.overlap == preferred_overlap:
             add(0.3, f"{c.overlap}-bar blend suits the keys")
+        if style == "smooth":
+            add(0.15 * c.overlap / 8, f"{c.overlap}-bar blend (smooth style likes long blends)")
         if far_tempo:
             add(-0.3, "big tempo stretch while both tracks play")
         if c.kind == "filter_sweep":
@@ -191,7 +217,7 @@ def score(a: Analysis, b: Analysis, c: Candidate, preferred_overlap: int) -> Can
     return c
 
 
-def _blend_candidates(a: Analysis, b: Analysis, min_out_bar: int) -> list[Candidate]:
+def _blend_candidates(a: Analysis, b: Analysis, min_out_bar: int, style: str = "mixed") -> list[Candidate]:
     overlaps = _overlaps(a, b)
     found = []
     for overlap in overlaps:
@@ -200,12 +226,12 @@ def _blend_candidates(a: Analysis, b: Analysis, min_out_bar: int) -> list[Candid
         ins = {s.start_bar for s in b.sections if s.start_bar <= MAX_INCOMING_SKIP * b.n_bars} | {0}
         ins = {i for i in ins if i + overlap <= b.n_bars}
         for kind in BLENDS:
-            if kind == "filter_sweep" and overlap not in (8, 16):
+            if kind == "filter_sweep" and overlap not in (8, 16, 32):
                 continue
             for o in outs:
                 for i in ins:
                     c = Candidate(out_bar=o, in_bar=i, overlap=overlap, swap_bar=_swap_bar(b, i, overlap), kind=kind)
-                    found.append(score(a, b, c, preferred_overlap=overlaps[0]))
+                    found.append(score(a, b, c, preferred_overlap=overlaps[0], style=style))
     return found
 
 
@@ -246,10 +272,15 @@ def _overlay_candidates(a: Analysis, b: Analysis, min_out_bar: int) -> list[Cand
     return found
 
 
-def candidates(a: Analysis, b: Analysis, min_out_bar: int = 0, kinds: tuple[str, ...] | None = None) -> list[Candidate]:
-    """All phrase-aligned candidates, best first. min_out_bar keeps A's previous blend clear."""
-    found = (_blend_candidates(a, b, min_out_bar) + _cut_candidates(a, b, min_out_bar)
-             + _overlay_candidates(a, b, min_out_bar))
+def candidates(a: Analysis, b: Analysis, min_out_bar: int = 0, kinds: tuple[str, ...] | None = None,
+               style: str = "mixed") -> list[Candidate]:
+    """All phrase-aligned candidates, best first. min_out_bar keeps A's previous blend clear.
+
+    style 'smooth' only offers real blends (kinds, if given, narrows it further).
+    """
+    found = _blend_candidates(a, b, min_out_bar, style)
+    if style != "smooth":
+        found += _cut_candidates(a, b, min_out_bar) + _overlay_candidates(a, b, min_out_bar)
     if kinds:
         found = [c for c in found if c.kind in kinds]
     return sorted(found, key=lambda c: c.score, reverse=True)
@@ -264,8 +295,9 @@ def min_out_after(c: Candidate, b: Analysis) -> int:
     return blend_end + min(MIN_SOLO_BARS, max(0, b.n_bars - blend_end - 4))
 
 
-def best_transition(a: Analysis, b: Analysis, min_out_bar: int = 0, kinds: tuple[str, ...] | None = None) -> Candidate:
-    found = candidates(a, b, min_out_bar, kinds)
+def best_transition(a: Analysis, b: Analysis, min_out_bar: int = 0, kinds: tuple[str, ...] | None = None,
+                    style: str = "mixed") -> Candidate:
+    found = candidates(a, b, min_out_bar, kinds, style)
     if found:
         return found[0]
     if kinds and "echo_out" not in kinds:

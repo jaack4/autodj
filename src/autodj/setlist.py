@@ -142,12 +142,13 @@ def _greedy_2opt(cost: np.ndarray) -> list[int]:
     return best
 
 
-def order_tracks(entries: list[Entry], arc: str, max_shift: int = MAX_SHIFT) -> tuple[list[int], dict[tuple[int, int], Candidate]]:
+def order_tracks(entries: list[Entry], arc: str, max_shift: int = MAX_SHIFT,
+                 style: str = "smooth") -> tuple[list[int], dict[tuple[int, int], Candidate]]:
     n = len(entries)
     transitions: dict[tuple[int, int], Candidate] = {}
     cost = np.zeros((n, n))
     for i, j in itertools.permutations(range(n), 2):
-        transitions[i, j] = best_transition(entries[i].analysis, entries[j].analysis)
+        transitions[i, j] = best_transition(entries[i].analysis, entries[j].analysis, style=style)
         cost[i, j] = pair_cost(entries[i].analysis, entries[j].analysis, transitions[i, j], arc, max_shift)
     if n <= 2:
         order = min(itertools.permutations(range(n)), key=lambda o: _path_cost(list(o), cost))
@@ -158,7 +159,7 @@ def order_tracks(entries: list[Entry], arc: str, max_shift: int = MAX_SHIFT) -> 
 
 def build_plan(
     source: Path, keep_order: bool | None = None, arc: str | None = None, bpm: float | None = None,
-    stems: bool = False, log=print, max_shift: int = MAX_SHIFT,
+    stems: bool = False, log=print, max_shift: int = MAX_SHIFT, style: str = "smooth",
 ) -> MixPlan:
     name, tracks, options = load_playlist(source)
     keep_order = options.get("keep_order", False) if keep_order is None else keep_order
@@ -174,34 +175,36 @@ def build_plan(
         transitions = {(i, i + 1): best_transition(entries[i].analysis, entries[i + 1].analysis)
                        for i in range(len(entries) - 1)}
     else:
-        order, _ = order_tracks(entries, arc, max_shift)
+        order, _ = order_tracks(entries, arc, max_shift, style)
     shifted = assign_shifts([entries[i] for i in order], max_shift)
     plan_transitions = []
     min_out = 0
     history: list[str] = []
     for (ea, a), (eb, b) in zip(shifted, shifted[1:]):
-        c = _varied_transition(a, b, min_out, history)  # re-planned on the shifted keys
+        c = _varied_transition(a, b, min_out, history, style)  # re-planned on the shifted keys
         history.append(c.kind)
         min_out = min_out_after(c, b)
         t = c.transition()
         t.notes = [f"score {c.score:+.2f}"] + c.reasons
         plan_transitions.append(t)
-    return MixPlan(name=name, bpm=bpm, tracks=[e.track for e, _ in shifted], transitions=plan_transitions)
+    return MixPlan(name=name, bpm=bpm, style=style, tracks=[e.track for e, _ in shifted],
+                   transitions=plan_transitions)
 
 
-VARIETY_PENALTY = (0.5, 0.25)  # same transition type as the previous one / the one before that
-USAGE_PENALTY = 0.15  # per earlier use of the same type anywhere in the set
+# (same type as the previous transition, as the one before that, per earlier use anywhere in the set)
+VARIETY = {"mixed": (0.5, 0.25, 0.15), "smooth": (0.15, 0.05, 0.0)}
 
 
-def _varied_transition(a: Analysis, b: Analysis, min_out: int, history: list[str]) -> Candidate:
+def _varied_transition(a: Analysis, b: Analysis, min_out: int, history: list[str], style: str = "smooth") -> Candidate:
     """Best transition for this pair, with a penalty for repeating the last couple of types."""
-    ranked = candidates(a, b, min_out_bar=min_out)
+    ranked = candidates(a, b, min_out_bar=min_out, style=style)
     if not ranked:
-        return best_transition(a, b, min_out_bar=min_out)
+        return best_transition(a, b, min_out_bar=min_out)  # nothing blends: any type (echo out fallback)
+    last, before, usage = VARIETY.get(style, VARIETY["mixed"])
 
     def penalty(kind: str) -> float:
-        recent = sum(p for p, prev in zip(VARIETY_PENALTY, reversed(history)) if prev == kind)
-        return recent + USAGE_PENALTY * history.count(kind)
+        recent = sum(p for p, prev in zip((last, before), reversed(history)) if prev == kind)
+        return recent + usage * history.count(kind)
 
     c = max(ranked, key=lambda x: x.score - penalty(x.kind))
     if penalty(c.kind):

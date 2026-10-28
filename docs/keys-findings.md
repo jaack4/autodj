@@ -42,3 +42,20 @@ Fixes:
   before that, −0.15 per earlier use anywhere in the set.
 
 Result: 3 overlays, 2 drop cuts, an echo-out, a filter sweep and a bass-swap blend.
+
+## Listening feedback (round 1) and fixes
+> "The transitions are far too choppy and sudden, there's no sense of mixing between the tracks."
+> "Too many soft outros that have a loud, more intense song coming in."
+
+- Only 2 of 8 transitions actually overlapped two tracks: drop cuts and echo outs are instant, and
+  acapella overlays swapped beats in 4 ms.
+- **`--style smooth` (new default):** real blends only (bass-swap blend, filter sweep), a bonus for long
+  overlaps (16–32 bars), lighter variety penalties. `--style mixed` keeps the old behaviour.
+- **Acapella overlays now end with a blend:** B's beat fades in over the last 4 bars, the bass swaps
+  on the downbeat, and A fades out over 2 bars.
+- **Energy matching:** penalty when B comes in more than 0.15 above A's energy in the overlap (×2),
+  or much quieter (more than 0.3 below), and when A has already faded (energy < 0.25).
+- **Don't chase A's last bar:** playing 85% of a track now counts as fully played, so blends leave
+  during sections with real energy instead of in the fade.
+- Result on `mysongs`: 8 blends (6 filter sweeps, 2 bass swaps), mostly 16 bars. Energy on each side
+  now mostly within ±0.2 (e.g. 0.55 → 0.56, 0.81 → 0.80).
