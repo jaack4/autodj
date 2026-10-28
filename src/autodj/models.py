@@ -83,6 +83,14 @@ class PlanTrack(BaseModel):
     artist: str | None = None
 
 
+class Loop(BaseModel):
+    """Repeat bars [at_bar - bars, at_bar) `repeats` extra times, inserted at at_bar (original bar numbers)."""
+
+    at_bar: int
+    bars: int
+    repeats: int
+
+
 class Transition(BaseModel):
     type: Literal["bass_swap_blend", "filter_sweep", "stem_blend", "melody_first", "reverb_wash", "double_drop",
                   "echo_out", "drop_cut", "beat_roll", "tape_stop", "acapella_overlay"] = "bass_swap_blend"
@@ -93,6 +101,7 @@ class Transition(BaseModel):
     ramp_bars: int = 16  # after the blend, the incoming track glides to its own tempo over this many bars
     echo_delay_beats: float = 0.75  # echo_out: delay time
     echo_feedback: float = 0.55  # echo_out: level of each repeat
+    loop_out: Loop | None = None  # loop-extend the outgoing track first; out_bar counts the looped bars
     notes: list[str] = []  # planner's reasons, for humans
 
 

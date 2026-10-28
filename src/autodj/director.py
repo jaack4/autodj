@@ -215,6 +215,8 @@ def apply_direction(plan: MixPlan, menus: list[Options], direction: Direction, u
                            f"used {replacement.describe()}")
             c, why = replacement, f"(replaced: the director's pick overlapped the previous transition) {why}"
         t = c.transition()
+        if c.loop is None:  # options were built on the already-looped track: keep its loop
+            t.loop_out = current.loop_out
         t.notes = [f"director: {why}", f"planner score {c.score:+.2f}"] + c.reasons
         transitions.append(t)
         min_out = min_out_after(c, m.b)

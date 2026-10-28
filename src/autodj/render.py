@@ -18,7 +18,8 @@ from scipy.signal import butter, sosfiltfilt
 from autodj.analysis import analyze_file
 from autodj.audio import load as load_audio
 from autodj.analysis.beats import MIN_CONFIDENCE, onset_offset
-from autodj.models import Analysis, MixPlan, PlanTrack, Transition
+from autodj.loops import extend_analysis, splice_audio
+from autodj.models import Analysis, Loop, MixPlan, PlanTrack, Transition
 from autodj.planner import region_offset_ms
 
 LOW_HZ = 200.0
@@ -47,6 +48,8 @@ class Deck:
     target_bpm: float  # tempo when playing solo
     gain: float  # loudness match to the plan's target LUFS
     semitones: int = 0  # pitch shift for key matching
+    loop: "Loop | None" = None  # loop-extend: the audio gets these bars spliced in before stretching
+    source_analysis: Analysis | None = None  # the unlooped analysis (bar times in the original audio)
     curve: TempoCurve = field(default_factory=list)  # empty: constant target tempo
     offset: float = 0.0  # mix time of the deck's output t=0
     play_from: float = 0.0  # output seconds
@@ -100,6 +103,8 @@ class Deck:
         audio = np.atleast_2d(audio).astype(np.float32)
         if audio.shape[0] == 1:
             audio = np.repeat(audio, 2, axis=0)
+        if self.loop is not None:
+            audio = splice_audio(audio, sr, self.source_analysis, self.loop)
         factor = self.factor_at(np.arange(audio.shape[1]) / sr)
         constant = np.allclose(factor, factor[0])
         # Rubber Band's R3 engine (high_quality=True) drifts up to ~50 ms within a track at 5%
@@ -375,6 +380,14 @@ def _split_bands(x: np.ndarray, sr: int) -> dict[str, np.ndarray]:
     return {"low": low, "mid": x - low - high, "high": high}
 
 
+def apply_loops(plan: MixPlan, decks: list[Deck]) -> None:
+    """Decks whose outgoing transition loops them play a longer, virtual version of the track."""
+    for d, tr in zip(decks, plan.transitions):
+        if tr.loop_out:
+            d.loop, d.source_analysis = tr.loop_out, d.analysis
+            d.analysis = extend_analysis(d.analysis, tr.loop_out)
+
+
 def make_deck(track: PlanTrack, plan: MixPlan) -> Deck:
     a = analyze_file(Path(track.path), bpm_hint=track.bpm_hint)
     target = plan.bpm or track.bpm or a.bpm
@@ -615,6 +628,7 @@ def _add(mix: np.ndarray, m0: int, signal: np.ndarray) -> None:
 def render(plan: MixPlan, log=lambda msg: None) -> tuple[np.ndarray, list[Deck], list[TransitionWindow]]:
     sr = plan.sample_rate
     decks = [make_deck(t, plan) for t in plan.tracks]
+    apply_loops(plan, decks)
     windows = place(plan, decks)
     end = max(d.offset + d.play_to for d in decks)
     mix = np.zeros((2, int(np.ceil(end * sr)) + 1 + sr), np.float32)  # +1 s of room for nudges

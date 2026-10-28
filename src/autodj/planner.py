@@ -7,7 +7,7 @@ import numpy as np
 
 from autodj.analysis.beats import MIN_CONFIDENCE
 from autodj.camelot import camelot_distance
-from autodj.models import Analysis, Transition
+from autodj.models import Analysis, Loop, Transition
 
 # Overlap lengths to consider by Camelot distance, preferred first. Clashing keys get short blends.
 OVERLAPS_BY_KEY_DISTANCE = {0: (16, 32, 8), 1: (16, 32, 8), 2: (8, 16), 3: (8, 4)}
@@ -39,10 +39,11 @@ class Candidate:
     kind: str = "bass_swap_blend"
     score: float = 0.0
     reasons: list[str] = field(default_factory=list)
+    loop: Loop | None = None  # A is loop-extended first (out_bar counts the looped bars)
 
     def transition(self) -> Transition:
         return Transition(type=self.kind, out_bar=self.out_bar, in_bar=self.in_bar, overlap_bars=self.overlap,
-                          swap_bar=self.swap_bar)
+                          swap_bar=self.swap_bar, loop_out=self.loop)
 
     def describe(self) -> str:
         if self.kind in CUTS:
@@ -435,7 +436,7 @@ def _overlay_candidates(a: Analysis, b: Analysis, min_out_bar: int) -> list[Cand
 
 
 def candidates(a: Analysis, b: Analysis, min_out_bar: int = 0, kinds: tuple[str, ...] | None = None,
-               style: str = "mixed") -> list[Candidate]:
+               style: str = "mixed", loops: bool = True) -> list[Candidate]:
     """All phrase-aligned candidates, best first. min_out_bar keeps A's previous blend clear.
 
     style 'smooth' only offers real blends (kinds, if given, narrows it further).
@@ -449,7 +450,30 @@ def candidates(a: Analysis, b: Analysis, min_out_bar: int = 0, kinds: tuple[str,
         found = [c for c in found if c.kind in allowed]
     if kinds:
         found = [c for c in found if c.kind in kinds]
+    if loops:
+        found += _looped_candidates(a, b, min_out_bar, kinds, style)
     return sorted(found, key=lambda c: c.score, reverse=True)
+
+
+LOOP_COST = 0.2  # per repeat
+
+
+def _looped_candidates(a: Analysis, b: Analysis, min_out_bar: int, kinds, style: str) -> list[Candidate]:
+    """Candidates that first loop A's last bars, so a full blend fits after its last drop."""
+    from autodj.loops import extend_analysis, loop_options
+
+    found = []
+    for loop in loop_options(a):
+        va = extend_analysis(a, loop)
+        for c in candidates(va, b, min_out_bar, kinds, style, loops=False):
+            if c.out_bar + c.overlap <= loop.at_bar:
+                continue  # doesn't reach the loop: same as an unlooped candidate
+            c.loop = loop
+            c.score = round(c.score - LOOP_COST * loop.repeats, 3)
+            c.reasons = c.reasons + [f"{-LOOP_COST * loop.repeats:+.2f} loops A's last {loop.bars} bars "
+                                     f"x{loop.repeats} to make room for the blend"]
+            found.append(c)
+    return found
 
 
 MIN_SOLO_BARS = 8  # a track plays alone at least this long between its two transitions (if long enough)

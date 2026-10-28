@@ -13,7 +13,7 @@ from autodj.render import Deck, TransitionWindow
 
 SECTION_COLORS = {
     "intro": "#5b7083", "build": "#d9a441", "drop": "#d9534f",
-    "break": "#5cb85c", "body": "#8a8f6a", "outro": "#5b7083",
+    "break": "#5cb85c", "body": "#8a8f6a", "outro": "#5b7083", "loop": "#b07ad9",
 }
 PREROLL_BARS = 4  # jump this far ahead of a transition so you hear it coming
 EMBED_MAX_BYTES = 60_000_000  # embed the MP3 in the page up to here (~40 min at 192 kbps); link it beyond

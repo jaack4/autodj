@@ -117,7 +117,7 @@ def pair(
 def build_set(
     source: Annotated[Path, typer.Argument(exists=True, help="Playlist .yaml, or a folder of audio files")],
     keep_order: Annotated[bool | None, typer.Option("--keep-order/--reorder", help="Keep the playlist order")] = None,
-    arc: Annotated[str | None, typer.Option(help="warmup_peak (tempo rises) | flat")] = None,
+    arc: Annotated[str | None, typer.Option(help="warmup_peak (tempo rises) | journey (build to a peak ~70% in, then a closer) | flat")] = None,
     bpm: Annotated[float | None, typer.Option(help="Lock every track to this tempo")] = None,
     stems: Annotated[bool, typer.Option(help="Separate stems: avoids vocal clashes, enables acapella_overlay")] = False,
     max_shift: Annotated[int, typer.Option(help="Max pitch shift (semitones) to match keys; 0 turns it off")] = 2,
@@ -150,7 +150,10 @@ def build_set(
         if k < len(plan.transitions):
             tr = plan.transitions[k]
             how = f"{tr.overlap_bars}-bar {tr.type}" if tr.overlap_bars else tr.type
-            typer.echo(f"       -> {how}: bar {tr.out_bar} into bar {tr.in_bar} ({tr.notes[0] if tr.notes else ''})")
+            loop = (f", after looping its last {tr.loop_out.bars} bars x{tr.loop_out.repeats}"
+                    if tr.loop_out else "")
+            typer.echo(f"       -> {how}: bar {tr.out_bar} into bar {tr.in_bar}{loop} "
+                       f"({tr.notes[0] if tr.notes else ''})")
             _warn_pair(a.model_copy(update={"key": key}), analyses[k + 1].model_copy(update={"key": keys[k + 1]}),
                        tr.type)
     for m in plan.mashups:
@@ -178,6 +181,9 @@ def _run_director(plan, plan_path: Path, model: str) -> Path | None:
         if t.key:
             update["key_confidence"] = 1.0
         analyses.append(a.model_copy(update=update))
+    from autodj.setlist import played_analyses
+
+    analyses = played_analyses(plan, analyses)  # bar numbers as the tracks play (loops included)
     typer.echo(f"asking the creative director ({model})...", err=True)
     try:
         directed, repairs = direct_plan(plan, analyses, model=model)

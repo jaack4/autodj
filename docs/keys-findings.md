@@ -113,3 +113,20 @@ track), and no respect for a track's arc.
 - **Open:** Uncaged → Under Your Spell stays the weakest pair (score ≈ 0). Uncaged has only 4 bars after its
   last drop, so every option either leaves before that drop or blends from its tail into a louder intro.
   Needs loop-extend (repeat A's last bars to make room) or a different order.
+
+## Round 5: loop extend and a fresh mix
+- **Loop extend** (`loops.py`): tracks with fewer than 16 bars after their last drop get loop options
+  (repeat the drop's last 4 or 8 bars, enough times for 16 bars of room). A looped track is a *virtual*
+  track: the analysis has the repeated bars inserted (as a new `loop` section, so the drop itself stays
+  protected), and the audio and stems get them spliced in on the downbeats (5 ms joins) before stretching.
+  Cost 0.2 per repeat. Uncaged → Under Your Spell went from score ≈0 (leave before the big drop, or blend
+  out of a 4-bar outro) to +0.92 (the whole drop plays, its last 4 bars loop ×3, 16-bar blend).
+- **Whole-plan order refinement:** pairwise costs were estimated before key shifts, variety and loops
+  were known. Now the ordering starts from the pairwise optimum, then tries every swap and every reversed
+  run, planning the *whole set* each time (cached candidates) and keeping improvements. ~1 minute for 9 tracks.
+- **`--arc journey`:** build to an intensity peak ~70% in, then a closer (intensity = drop grit, drums and
+  loudness, ranked within the set). On `mysongs` the tempo spread (124–150 BPM) mostly fixes the order
+  anyway: any non-climbing order means 10–20% tempo jumps.
+- Bug fixed: the variety penalty rebuilt candidates without their loop (looped bar numbers without the loop).
+- **Fresh mix** (`output/sets/mysongs-fresh.*`): journey arc, 3 loops, 32-bar opening blend; 5 of 8
+  transitions measure tight (0–5 ms), the rest have too few kicks to measure.

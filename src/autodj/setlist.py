@@ -1,5 +1,6 @@
 """Turn a playlist into a MixPlan: analyze tracks, order them, plan every transition."""
 
+import dataclasses
 import itertools
 from dataclasses import dataclass
 from pathlib import Path
@@ -17,7 +18,9 @@ from autodj.planner import (UNCERTAIN_KEY, Candidate, best_transition, candidate
 AUDIO_EXTENSIONS = {".mp3", ".wav", ".flac", ".aiff", ".aif", ".m4a", ".ogg"}
 MIN_TRACK_BARS = 16  # shorter files (jingles, snippets) are skipped
 EXACT_ORDER_MAX_TRACKS = 12  # Held-Karp above this gets slow; fall back to greedy + 2-opt
-ARCS = ("warmup_peak", "flat")
+ARCS = ("warmup_peak", "flat", "journey")
+JOURNEY_PEAK = 0.7  # journey: intensity peaks this far through the set, then comes down to a closer
+JOURNEY_WEIGHT = 3.0
 
 
 @dataclass
@@ -179,34 +182,126 @@ def build_plan(
     log(f"planning {len(entries)} tracks")
     if keep_order:
         order = list(range(len(entries)))
-        transitions = {(i, i + 1): best_transition(entries[i].analysis, entries[i + 1].analysis)
-                       for i in range(len(entries) - 1)}
     else:
-        order, _ = order_tracks(entries, arc, max_shift, style)
-    shifted = assign_shifts([entries[i] for i in order], max_shift)
+        order, _ = order_tracks(entries, "flat" if arc == "journey" else arc, max_shift, style)
+    cache: dict = {}
+    if not keep_order:
+        order = refine_order(entries, order, arc, max_shift, style, cache, log)
+    shifted, chosen = plan_order([entries[i] for i in order], max_shift, style, cache)
     plan_transitions = []
-    min_out = 0
-    history: list[str] = []
-    for (ea, a), (eb, b) in zip(shifted, shifted[1:]):
-        c = _varied_transition(a, b, min_out, history, style)  # re-planned on the shifted keys
-        history.append(c.kind)
-        min_out = min_out_after(c, b)
+    for c in chosen:
         t = c.transition()
         t.notes = [f"score {c.score:+.2f}"] + c.reasons
         plan_transitions.append(t)
     plan = MixPlan(name=name, bpm=bpm, style=style, tracks=[e.track for e, _ in shifted],
                    transitions=plan_transitions)
-    plan.mashups = find_mashups(plan, [e.analysis for e, _ in shifted], mashups)
+    plan.mashups = find_mashups(plan, played_analyses(plan, [e.analysis for e, _ in shifted]), mashups)
     return plan
+
+
+def played_analyses(plan: MixPlan, analyses: list[Analysis]) -> list[Analysis]:
+    """Analyses as the tracks actually play: loop-extended where a transition loops them."""
+    from autodj.loops import extend_analysis
+
+    out = list(analyses)
+    for i, t in enumerate(plan.transitions):
+        if t.loop_out:
+            out[i] = extend_analysis(out[i], t.loop_out)
+    return out
 
 
 # (same type as the previous transition, as the one before that, per earlier use anywhere in the set)
 VARIETY = {"mixed": (0.5, 0.25, 0.15), "smooth": (0.35, 0.1, 0.05)}
 
 
-def _varied_transition(a: Analysis, b: Analysis, min_out: int, history: list[str], style: str = "smooth") -> Candidate:
+def plan_order(ordered: list[Entry], max_shift: int, style: str, cache: dict | None = None
+               ) -> tuple[list[tuple[Entry, Analysis]], list[Candidate]]:
+    """Key shifts and transitions for tracks in this order. `cache` reuses candidate lists across orders."""
+    cache = {} if cache is None else cache
+    shifted = assign_shifts(ordered, max_shift)
+    chosen: list[Candidate] = []
+    history: list[str] = []
+    min_out = 0
+    for (ea, a), (eb, b) in zip(shifted, shifted[1:]):
+        key = (ea.track.path, eb.track.path, a.key, b.key, min_out, style)
+        if key not in cache:
+            cache[key] = candidates(a, b, min_out_bar=min_out, style=style)
+        c = _varied_transition(a, b, min_out, history, style, ranked=cache[key])
+        history.append(c.kind)
+        min_out = min_out_after(c, b)
+        chosen.append(c)
+    return shifted, chosen
+
+
+def intensity_ranks(analyses: list[Analysis]) -> list[float]:
+    """0..1 rank of each track's intensity at full power (grit, drums, loudness of its drops)."""
+    def power(a: Analysis) -> float:
+        c = drop_character(a)
+        if c is None:
+            return float(np.mean(a.bar_energy))
+        return c["grit"] / 0.1 + c["loud"] / 6 + c.get("drums", 0.0) / 15
+    values = [power(a) for a in analyses]
+    order = np.argsort(np.argsort(values))
+    return (order / max(1, len(values) - 1)).tolist()
+
+
+def journey_target(position: int, n: int) -> float:
+    """Wanted intensity at a position: rises from 0.2 to a peak at JOURNEY_PEAK, then eases to 0.5."""
+    x = position / max(1, n - 1)
+    if x <= JOURNEY_PEAK:
+        return 0.2 + 0.8 * x / JOURNEY_PEAK
+    return 1.0 - 0.5 * (x - JOURNEY_PEAK) / (1 - JOURNEY_PEAK)
+
+
+def order_cost(shifted: list[tuple[Entry, Analysis]], chosen: list[Candidate], arc: str) -> float:
+    """Whole-set cost of a planned order (keys already shifted, transitions already chosen)."""
+    pairwise_arc = "flat" if arc == "journey" else arc
+    cost = sum(pair_cost(a, b, c, pairwise_arc, max_shift=0)
+               for ((_, a), (_, b)), c in zip(zip(shifted, shifted[1:]), chosen))
+    if arc == "journey":
+        ranks = intensity_ranks([a for _, a in shifted])
+        cost += JOURNEY_WEIGHT * sum((r - journey_target(k, len(ranks))) ** 2 for k, r in enumerate(ranks))
+    return cost
+
+
+REFINE_SECONDS = 120.0
+
+
+def refine_order(entries: list[Entry], order: list[int], arc: str, max_shift: int, style: str, cache: dict,
+                 log=print) -> list[int]:
+    """Improve the order by planning whole sets: try swapping any two tracks and reversing any run,
+    keep whatever lowers the real cost (actual shifts, transitions, variety, loops)."""
+    import time
+
+    def cost(o: list[int]) -> float:
+        return order_cost(*plan_order([entries[i] for i in o], max_shift, style, cache), arc)
+
+    best, best_cost = list(order), cost(order)
+    log(f"refining the order (start cost {best_cost:+.2f})")
+    start, improved = time.monotonic(), True
+    while improved and time.monotonic() - start < REFINE_SECONDS:
+        improved = False
+        n = len(best)
+        moves = [(i, j, kind) for i in range(n) for j in range(i + 1, n) for kind in ("swap", "reverse")]
+        for i, j, kind in moves:
+            if time.monotonic() - start > REFINE_SECONDS:
+                break
+            o = list(best)
+            if kind == "swap":
+                o[i], o[j] = o[j], o[i]
+            else:
+                o[i : j + 1] = o[i : j + 1][::-1]
+            c = cost(o)
+            if c < best_cost - 1e-6:
+                best, best_cost, improved = o, c, True
+    log(f"refined order cost {best_cost:+.2f}")
+    return best
+
+
+def _varied_transition(a: Analysis, b: Analysis, min_out: int, history: list[str], style: str = "smooth",
+                       ranked: list[Candidate] | None = None) -> Candidate:
     """Best transition for this pair, with a penalty for repeating the last couple of types."""
-    ranked = candidates(a, b, min_out_bar=min_out, style=style)
+    ranked = candidates(a, b, min_out_bar=min_out, style=style) if ranked is None else ranked
     if not ranked:
         return best_transition(a, b, min_out_bar=min_out)  # nothing blends: any type (echo out fallback)
     last, before, usage = VARIETY.get(style, VARIETY["mixed"])
@@ -216,9 +311,9 @@ def _varied_transition(a: Analysis, b: Analysis, min_out: int, history: list[str
         return recent + usage * history.count(kind)
 
     c = max(ranked, key=lambda x: x.score - penalty(x.kind))
-    if penalty(c.kind):
-        c = Candidate(c.out_bar, c.in_bar, c.overlap, c.swap_bar, c.kind, round(c.score - penalty(c.kind), 3),
-                      c.reasons + [f"{-penalty(c.kind):+.2f} same type as a recent transition"])
+    if penalty(c.kind):  # a copy: the cached candidate is shared between orders
+        c = dataclasses.replace(c, score=round(c.score - penalty(c.kind), 3),
+                                reasons=c.reasons + [f"{-penalty(c.kind):+.2f} same type as a recent transition"])
     return c
 
 

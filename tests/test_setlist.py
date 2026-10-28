@@ -95,3 +95,36 @@ def test_set_varies_transition_types(club_track):
     first = _varied_transition(a, b, 0, [])
     second = _varied_transition(a, b, 0, [first.kind, first.kind])
     assert second.kind != first.kind
+
+
+def test_refine_order_never_makes_the_set_worse(club_track):
+    from autodj.setlist import order_cost, plan_order, refine_order
+
+    specs = [("10A", 126.0), ("8A", 122.0), ("11A", 128.0), ("9A", 124.0), ("3B", 125.0)]
+    entries = [Entry(PlanTrack(path=f"/{k}.mp3"), club_track(key=k, bpm=b, path=f"/{k}.mp3")) for k, b in specs]
+    start = [0, 1, 2, 3, 4]
+    cache: dict = {}
+    refined = refine_order(entries, start, "warmup_peak", 2, "smooth", cache, log=lambda m: None)
+    cost = lambda o: order_cost(*plan_order([entries[i] for i in o], 2, "smooth", cache), "warmup_peak")
+    assert sorted(refined) == start and cost(refined) <= cost(start)
+
+
+def test_journey_target_shape():
+    from autodj.setlist import journey_target
+
+    curve = [journey_target(k, 11) for k in range(11)]
+    assert curve[0] == pytest.approx(0.2) and max(curve) == pytest.approx(1.0)
+    assert curve.index(max(curve)) == 7 and curve[-1] == pytest.approx(0.5)
+
+
+def test_variety_penalty_keeps_the_loop():
+    from autodj.setlist import _varied_transition
+    from conftest import make_analysis
+
+    a = make_analysis([("intro", 0, 16, 0.4), ("drop", 16, 32, 0.9), ("break", 32, 48, 0.5),
+                       ("drop", 48, 64, 0.95), ("outro", 64, 68, 0.3)], vocals=[0.0] * 68)
+    b = make_analysis([("intro", 0, 16, 0.4), ("drop", 16, 48, 0.9), ("outro", 48, 64, 0.4)], vocals=[0.0] * 64)
+    first = _varied_transition(a, b, 0, [], "smooth")
+    again = _varied_transition(a, b, 0, [first.kind, first.kind], "smooth")
+    for c in (first, again):
+        assert c.out_bar + c.overlap <= a.n_bars or c.loop is not None  # looped bars always come with their loop
