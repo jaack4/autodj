@@ -8,13 +8,13 @@ import librosa
 import numpy as np
 import pyloudnorm
 
-from autodj.analysis.beats import BackendUnavailable, beat_this_checkpoint_cached, detect_grid
+from autodj.analysis.beats import ALIGN_WINDOW, BackendUnavailable, beat_this_checkpoint_cached, detect_grid
 from autodj.analysis.key import estimate_key
 from autodj.analysis.structure import bar_features, novelty, segment
 from autodj.camelot import key_name, to_camelot
 from autodj.models import Analysis
 
-ANALYSIS_VERSION = 5
+ANALYSIS_VERSION = 6
 ANALYSIS_SR = 22050
 CACHE_DIR = Path(".cache/analysis")
 BACKENDS = ("beat_this", "heuristic")  # downbeat methods
@@ -46,13 +46,16 @@ def _analyze(path: Path, sha: str, backend: str, bpm_hint: float | None) -> Anal
     sections = segment(energy, nov, bar_starts, bar_len)
     pc, minor, key_conf = estimate_key(y, sr)
 
+    # Local grid alignment per bar, from the window containing the bar's first beat.
+    window = np.minimum((grid.phase + 4 * np.arange(len(bar_starts))) // ALIGN_WINDOW, len(grid.window_offsets_ms) - 1)
+
     return Analysis(
         version=ANALYSIS_VERSION,
         path=str(path),
         sha256=sha,
         duration=round(duration, 3),
         beat_backend=backend,
-        bpm=round(grid.bpm, 2),
+        bpm=round(grid.bpm, 4),
         beats=np.round(grid.beats, 4).tolist(),
         downbeats=np.round(bar_starts, 4).tolist(),
         onset_offset_ms=round(grid.onset_offset_ms, 1),
@@ -64,6 +67,8 @@ def _analyze(path: Path, sha: str, backend: str, bpm_hint: float | None) -> Anal
         lufs=round(float(lufs), 2),
         bar_energy=np.round(energy, 3).tolist(),
         bar_novelty=np.round(nov, 3).tolist(),
+        bar_offset_ms=np.round(grid.window_offsets_ms[window], 1).tolist(),
+        bar_offset_confidence=np.round(grid.window_confidence[window], 2).tolist(),
         sections=sections,
     )
 

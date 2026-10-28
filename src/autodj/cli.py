@@ -40,36 +40,36 @@ def analyze(
             typer.echo(f"  report: {out}/")
 
 
-def _default_out_bar(a, overlap: int) -> int:
-    """Latest section start with room for the whole overlap (usually the outro or last break)."""
-    n = len(a.downbeats)
-    starts = [s.start_bar for s in a.sections if s.start_bar + overlap <= n]
-    return max(starts) if starts else max(0, n - overlap)
-
-
 @app.command()
 def pair(
     track_a: Annotated[Path, typer.Argument(exists=True, dir_okay=False)],
     track_b: Annotated[Path, typer.Argument(exists=True, dir_okay=False)],
     bpm: Annotated[float | None, typer.Option(help="Master tempo (default: track A's)")] = None,
-    out_bar: Annotated[int | None, typer.Option(help="Bar of A where the blend starts")] = None,
-    in_bar: Annotated[int, typer.Option(help="Bar of B that lands on out_bar")] = 0,
-    overlap: Annotated[int, typer.Option(help="Blend length in bars")] = 16,
+    out_bar: Annotated[int | None, typer.Option(help="Bar of A where the blend starts (default: planner)")] = None,
+    in_bar: Annotated[int | None, typer.Option(help="Bar of B that lands on out_bar (default: planner)")] = None,
+    overlap: Annotated[int | None, typer.Option(help="Blend length in bars (default: planner)")] = None,
     output: Annotated[Path | None, typer.Option("-o", help="Plan file to write")] = None,
 ) -> None:
     """Draft a two-track MixPlan (A into B with a bass-swap blend)."""
     from autodj.analysis import analyze_file
     from autodj.camelot import camelot_distance
     from autodj.models import MixPlan, PlanTrack, Transition
+    from autodj.planner import candidates
     from autodj.report import OUTPUT_DIR
 
     a, b = analyze_file(track_a), analyze_file(track_b)
-    plan = MixPlan(
-        bpm=bpm or a.bpm,
-        tracks=[PlanTrack(path=a.path), PlanTrack(path=b.path)],
-        transitions=[Transition(out_bar=_default_out_bar(a, overlap) if out_bar is None else out_bar,
-                                in_bar=in_bar, overlap_bars=overlap)],
-    )
+    if out_bar is None and in_bar is None and overlap is None:
+        ranked = candidates(a, b)
+        for i, c in enumerate(ranked[:3]):
+            typer.echo(f"{'*' if i == 0 else ' '} {c.score:+.2f}  {c.describe()}")
+            for why in c.reasons:
+                typer.echo(f"         {why}")
+        transition = ranked[0].transition()
+    else:
+        transition = Transition(out_bar=out_bar if out_bar is not None else a.n_bars - (overlap or 16),
+                                in_bar=in_bar or 0, overlap_bars=overlap or 16)
+    plan = MixPlan(bpm=bpm or a.bpm, tracks=[PlanTrack(path=a.path), PlanTrack(path=b.path)],
+                   transitions=[transition])
     tr = plan.transitions[0]
     output = output or OUTPUT_DIR / "plans" / f"{track_a.stem} -- {track_b.stem}.json"
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -98,7 +98,8 @@ def render(
     import soundfile as sf
 
     from autodj.models import MixPlan
-    from autodj.render import MIN_ALIGNMENT_CONFIDENCE, mix_alignment
+    from autodj.analysis.beats import MIN_CONFIDENCE
+    from autodj.render import mix_alignment
     from autodj.render import render as render_plan
 
     plan = MixPlan.model_validate_json(plan_file.read_text())
@@ -120,7 +121,7 @@ def render(
         tracklist["transitions"].append({"start": round(w.start, 3), "swap": round(w.swap, 3), "end": round(w.end, 3),
                                          "out_offset_ms": round(off_a, 1), "in_offset_ms": round(off_b, 1),
                                          "confidence": [round(conf_a, 2), round(conf_b, 2)]})
-        if min(conf_a, conf_b) < MIN_ALIGNMENT_CONFIDENCE:
+        if min(conf_a, conf_b) < MIN_CONFIDENCE:
             verdict = "can't tell (too few kicks in the overlap), listen to it"
         else:
             verdict = "tight" if flam <= 10 else "audible flam" if flam > 20 else "borderline"

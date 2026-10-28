@@ -12,13 +12,33 @@ def _click_track(bpm, seconds, sr=22050):
 
 
 def test_grid_alignment_flags_wrong_tempo():
-    from autodj.analysis.beats import grid_alignment
+    from autodj.analysis.beats import grid_alignment, local_alignment
+
+    def drift(beats, period):
+        return grid_alignment(*local_alignment(y, 22050, beats, period))[1]
 
     y, _ = _click_track(123.3, 140)
     good = 0.25 + (60 / 123.3) * np.arange(280)
     bad = 0.25 + (60 / 122.4) * np.arange(280)  # 0.7% slow: slides ~2 beats over the track
-    assert abs(grid_alignment(y, 22050, good, 60 / 123.3)[1]) < 10
-    assert abs(grid_alignment(y, 22050, bad, 60 / 122.4)[1]) > 300
+    assert abs(drift(good, 60 / 123.3)) < 10
+    assert abs(drift(bad, 60 / 122.4)) > 300
+
+
+def test_local_alignment_locates_a_splice():
+    from autodj.analysis.beats import local_alignment
+
+    sr = 22050
+    period = 60 / 126
+    # 64 beats on grid, then everything 100 ms late (an edit that isn't a whole number of beats)
+    times = np.r_[0.3 + period * np.arange(64), 0.4 + period * np.arange(64, 128)]
+    y = np.zeros(int((times[-1] + 1) * sr))
+    burst = np.sin(2 * np.pi * 55 * np.arange(1000) / sr) * np.exp(-np.arange(1000) / 200)
+    for t in times:
+        y[int(t * sr) : int(t * sr) + 1000] += burst
+    offsets, confidence = local_alignment(y, sr, 0.3 + period * np.arange(128), period)
+    assert (confidence > 1.5).all()
+    assert np.abs(offsets[:4]).max() < 0.01
+    assert np.abs(offsets[4:] - 0.1).max() < 0.01
 
 
 def _kick_track(bpm, seconds, start=0.31, sr=22050, seed=0):

@@ -10,15 +10,15 @@ import pedalboard
 from scipy.signal import butter, sosfiltfilt
 
 from autodj.analysis import analyze_file
-from autodj.analysis.beats import onset_offset
+from autodj.analysis.beats import MIN_CONFIDENCE, onset_offset
 from autodj.models import Analysis, MixPlan, Transition
+from autodj.planner import region_offset_ms
 
 LOW_HZ = 200.0
 HIGH_HZ = 2500.0
 BANDS = ("low", "mid", "high")
 SWAP_RAMP_S = 0.05  # bass swap completes exactly on the downbeat
 CEILING_DBFS = -1.0
-MIN_ALIGNMENT_CONFIDENCE = 1.5  # below this an overlap has too few kicks to measure
 CURVE_POINTS = 32
 
 Breakpoints = list[tuple[float, float]]  # (mix time s, gain)
@@ -108,7 +108,7 @@ def place(plan: MixPlan, decks: list[Deck]) -> list[TransitionWindow]:
         _check_transition(tr, a, b)
         t0 = a.offset + a.bar_time(tr.out_bar)
         b.play_from = b.bar_time(tr.in_bar)
-        b.offset = t0 - b.play_from
+        b.offset = t0 - b.play_from + _nudge(tr, a, b)
         t1 = t0 + tr.overlap_bars * bar
         ts = t0 + (tr.swap_bar if tr.swap_bar is not None else tr.overlap_bars // 2) * bar
         a.play_to = t1 - a.offset
@@ -116,6 +116,16 @@ def place(plan: MixPlan, decks: list[Deck]) -> list[TransitionWindow]:
         windows.append(TransitionWindow(t0, ts, t1, a, b))
     decks[-1].play_to = decks[-1].audio.shape[1] / plan.sample_rate
     return windows
+
+
+def _nudge(tr: Transition, a: Deck, b: Deck) -> float:
+    """Seconds to shift B so its kicks land on A's during the overlap, like nudging a platter.
+
+    Corrects constant local offsets (e.g. after a splice) that a single track-wide grid can't.
+    """
+    off_a, _ = region_offset_ms(a.analysis, tr.out_bar, tr.out_bar + tr.overlap_bars)
+    off_b, _ = region_offset_ms(b.analysis, tr.in_bar, tr.in_bar + tr.overlap_bars)
+    return (off_a / a.rate - off_b / b.rate) / 1000
 
 
 def _check_transition(tr: Transition, a: Deck, b: Deck) -> None:

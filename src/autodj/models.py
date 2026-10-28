@@ -34,7 +34,22 @@ class Analysis(BaseModel):
 
     bar_energy: list[float]
     bar_novelty: list[float]
+    bar_offset_ms: list[float]  # local kick-vs-grid offset; jumps mark splices or tempo changes
+    bar_offset_confidence: list[float]  # < 1.5: too few kicks to measure
     sections: list[Section]
+
+    @property
+    def n_bars(self) -> int:
+        return len(self.downbeats)
+
+    def section_at(self, bar: int) -> Section:
+        for s in self.sections:
+            if s.start_bar <= bar < s.end_bar:
+                return s
+        return self.sections[-1]
+
+    def section_starts(self) -> set[int]:
+        return {s.start_bar for s in self.sections} | {self.n_bars}
 
 
 class PlanTrack(BaseModel):

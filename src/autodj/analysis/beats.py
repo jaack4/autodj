@@ -16,6 +16,8 @@ import numpy as np
 BPM_RANGE = (75.0, 180.0)
 DOUBLE_TIME_RATIO = 0.8  # prefer 2x tempo if its comb score is at least this close
 GRID_MAX_DRIFT_MS = 25.0  # onset-vs-grid drift between first and last third
+ALIGN_WINDOW = 16  # beats per local alignment measurement
+MIN_CONFIDENCE = 1.5  # windows below this have too few kicks to measure
 
 
 class BackendUnavailable(RuntimeError):
@@ -27,8 +29,11 @@ class BeatGrid:
     period: float  # seconds per beat
     beats: np.ndarray
     downbeats: np.ndarray
+    phase: int  # index of the first downbeat in `beats`
     onset_offset_ms: float  # median (onsets - grid); constant offsets are harmless
     drift_ms: float  # change in that offset from first to last third of the track
+    window_offsets_ms: np.ndarray  # local offset per ALIGN_WINDOW beats
+    window_confidence: np.ndarray  # peak/mean of each window's alignment score (~1 = no kicks)
 
     @property
     def bpm(self) -> float:
@@ -146,24 +151,35 @@ def _best_shift(env: np.ndarray, fps: float, beats: np.ndarray, period: float, c
     return center + float(shifts[k]), float(score[k] / (score.mean() + 1e-9))
 
 
-def grid_alignment(y: np.ndarray, sr: int, beats: np.ndarray, period: float, window: int = 16) -> tuple[float, float]:
-    """Best kick-band alignment of each `window`-beat stretch of the grid, followed across the track.
+def local_alignment(
+    y: np.ndarray, sr: int, beats: np.ndarray, period: float, window: int = ALIGN_WINDOW
+) -> tuple[np.ndarray, np.ndarray]:
+    """Kick-band offset (s) and confidence of each `window`-beat stretch of the grid.
 
-    Returns (median offset ms, drift ms). Each window searches near the previous window's
-    offset, so a grid that slides by whole beats over the track accumulates large drift
-    instead of silently matching the wrong onsets.
+    Each window searches near the last confident window's offset, so a grid that slides by
+    whole beats accumulates offset instead of silently matching the wrong onsets, and
+    sparse sections (no kicks) can't drag the tracking off course.
     """
     env, fps = _kick_env(y, sr)
-    offsets: list[float] = []
+    offsets, confidence = [], []
+    center = 0.0
     for start in range(0, len(beats) - window + 1, window):
-        shift, _ = _best_shift(env, fps, beats[start : start + window], period, offsets[-1] if offsets else 0.0)
+        shift, conf = _best_shift(env, fps, beats[start : start + window], period, center)
         offsets.append(shift)
-    if len(offsets) < 3:
+        confidence.append(conf)
+        if conf >= MIN_CONFIDENCE:
+            center = shift
+    return np.array(offsets), np.array(confidence)
+
+
+def grid_alignment(offsets: np.ndarray, confidence: np.ndarray) -> tuple[float, float]:
+    """(median offset ms, drift ms between first and last third) over confident windows."""
+    good = offsets[confidence >= MIN_CONFIDENCE]
+    if len(good) < 3:
         return 0.0, 0.0
-    offsets = np.array(offsets)
-    third = max(1, len(offsets) // 3)
-    drift = np.median(offsets[-third:]) - np.median(offsets[:third])
-    return float(np.median(offsets) * 1000), float(drift * 1000)
+    third = max(1, len(good) // 3)
+    drift = np.median(good[-third:]) - np.median(good[:third])
+    return float(np.median(good) * 1000), float(drift * 1000)
 
 
 def onset_offset(y: np.ndarray, sr: int, beats: np.ndarray, period: float) -> tuple[float, float]:
@@ -183,11 +199,15 @@ def detect_grid(y: np.ndarray, sr: int, duration: float, backend: str, bpm_hint:
         phase = downbeat_phase_heuristic(y, sr, beats)
     else:
         raise ValueError(f"Unknown downbeat backend: {backend}")
-    offset_ms, drift_ms = grid_alignment(y, sr, beats, period)
+    offsets, confidence = local_alignment(y, sr, beats, period)
+    offset_ms, drift_ms = grid_alignment(offsets, confidence)
     return BeatGrid(
         period=period,
         beats=beats,
         downbeats=beats[phase::4],
+        phase=phase,
         onset_offset_ms=offset_ms,
         drift_ms=drift_ms,
+        window_offsets_ms=offsets * 1000,
+        window_confidence=confidence,
     )
