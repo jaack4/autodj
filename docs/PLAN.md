@@ -37,10 +37,12 @@ playlist.yaml ──► Ingest ──► Analyze ──► Plan set ──► Pl
 ### 2. Analyze (once per file, cached by content hash in `.cache/`)
 | Output | Purpose | Candidate tool |
 |---|---|---|
-| Beat grid and downbeats | Align bars | `allin1` or `beat_this` |
+| Beat grid | Align beats | Comb search over kick-band onsets for one steady tempo and phase (beat trackers got tempos wrong by 2–3%) |
+| Downbeats | Align bars | `beat_this` model, heuristic fallback |
+| Per-bar grid offset | Find splices, nudge blends | Kick alignment per 16 beats, tracked across the track |
 | Sections (intro, build, drop, break, outro) and phrase boundaries | Pick transition points | Bar-level novelty + energy, segmented with DP that prefers 8/16/32-bar sections (`allin1` ruled out for now, see M0 findings) |
-| Stems (vocals, drums, bass, other) | Bass swaps, acapella overlays | Demucs (`htdemucs`) |
-| Per-bar energy and vocal presence | Avoid vocal clashes, shape energy | RMS and onset density on the mix and the vocal stem |
+| Stems (vocals, drums, bass, other) | Acapella overlays, vocal clashes | Demucs (`htdemucs`), optional (`--stems`) |
+| Per-bar energy and vocal presence | Avoid vocal clashes, shape energy | Bar RMS and bass energy; vocal-stem level relative to the mix |
 | Integrated loudness | Level-match tracks | `pyloudnorm` |
 | Key and BPM (when missing) | Planning | `librosa` / `essentia` |
 
@@ -49,8 +51,8 @@ playlist.yaml ──► Ingest ──► Analyze ──► Plan set ──► Pl
   - **Key:** Camelot distance (same = best; ±1 or A↔B = good; anything else is penalized)
   - **Tempo:** ratio between BPMs, allowing half or double time. Stretching more than ~6% is penalized.
   - **Energy:** penalize big jumps, unless the target arc calls for one.
-- Ordering is a path search over that graph (greedy + 2-opt, or beam search),
-  plus a target **energy arc** (warm-up → peak → cool-down).
+- Ordering is a path search over that graph: exact (Held-Karp) up to 12 tracks,
+  greedy + 2-opt above. The arc option `warmup_peak` prefers rising tempo.
 - Option `keep_order: true`: skip reordering and only plan transitions.
 
 ### 4. Plan transitions
@@ -59,16 +61,20 @@ For each adjacent pair:
    in-points in B (intro, start of a phrase). Always phrase-aligned, always on downbeats.
 2. **Candidate types**, from the transition library (below), filtered by
    constraints such as key distance, vocal overlap and available stems.
-3. **Score and pick.** Rule-based scoring in v0. Later, an LLM "creative
-   director" chooses among the *valid* candidates using structured output. The
-   LLM never does audio math. It only picks from options the system has already
-   checked.
-4. **Tempo plan:** where to ramp the tempo, and over how many bars.
+3. **Score and pick.** Rule-based scoring; every candidate carries its reasons.
+   Later, an LLM "creative director" may choose among the *valid* candidates
+   using structured output. It never does audio math; it only picks from
+   options the system has already checked.
+4. **Tempo plan:** each track plays at its own tempo. The incoming track
+   matches the outgoing one during the blend, then glides to its own tempo
+   over `ramp_bars`.
 
 ### 5. Render
-- Time-stretch and pitch-shift with Rubber Band (`pyrubberband`).
-- Line up the downbeats of B with the downbeats of A over the overlap.
-- Apply automation curves (gain, 3-band EQ, HPF/LPF, delay) per track or per stem with `pedalboard`.
+- Time-stretch along each deck's tempo curve with Rubber Band (via `pedalboard`, R2 engine).
+- Line up B's bars with A's, then **nudge** B by the measured kick offset in
+  the actual overlap audio (closed loop, like nudging a platter).
+- Automation: 3-band EQ gains, swept HPF/LPF (STFT mask), echo tail, and
+  vocal/instrumental stem gains.
 - Sum, apply a light limiter, and export: `mix.wav`, plus a `tracklist.json`
   with timestamps.
 
@@ -80,7 +86,7 @@ For each adjacent pair:
 | `echo_out` | A ends on a delay tail; B drops in on a downbeat | Nothing (works for incompatible keys) |
 | `drop_cut` | Hard cut from A's build into B's drop | A has a build, B has a drop |
 | `acapella_overlay` | B's vocal stem over A's instrumental, before a full switch | Stems, key distance ≤ 1, no vocals in that part of A |
-| `loop_extend` | Loop 4–8 bars of A's outro to make room | Clean loop region |
+| `loop_extend` | Loop 4–8 bars of A's outro to make room | Clean loop region (not built yet) |
 
 ## Data model (sketch)
 ```
@@ -99,22 +105,23 @@ Pydantic models, serialized to JSON.
 - LLM (M5, optional): the Claude API, with structured output for choosing transitions.
 
 ## Milestones
-- [ ] **M0: Analysis spike.** Install the stack and run it on 3–5 real tracks.
+- [x] **M0: Analysis spike.** Install the stack and run it on 3–5 real tracks.
       Check beat, downbeat and section accuracy by ear or with clicks. Decide
       between `allin1` and `beat_this`, and decide whether a phrase-boundary
       fallback is needed. *Biggest risk; do this first.*
       **Mostly done. See [M0-findings.md](M0-findings.md).** Beats, bars and
       sections verified by ear on 2 tracks; more tracks pending.
-- [ ] **M1: Two-track render.** Hand-written MixPlan for A→B with
+- [x] **M1: Two-track render.** Hand-written MixPlan for A→B with
       `bass_swap_blend` at hand-picked bars. This proves time-stretching,
       alignment, automation and export.
-      **Engine done. See [M1-findings.md](M1-findings.md).** Waiting on a by-ear check.
-- [ ] **M2: Automatic transition points.** Choose phrase-aligned out- and
-      in-points from the analysis.
-- [ ] **M3: Full set.** Ordering by compatibility and energy arc, render N
-      tracks, export the tracklist. **First usable version.**
-- [ ] **M4: Transition library.** Filter sweep, echo out, drop cut, stems and
-      acapella overlay, loop extend.
+      **Done. See [M1-findings.md](M1-findings.md).**
+- [x] **M2: Automatic transition points.** Choose phrase-aligned out- and
+      in-points from the analysis. See [M2-M4-findings.md](M2-M4-findings.md).
+- [x] **M3: Full set.** Ordering by compatibility and energy arc, render N
+      tracks, export the tracklist. **First usable version.** Needs a by-ear
+      test on a real playlist.
+- [x] **M4: Transition library.** Filter sweep, echo out, drop cut, stems and
+      acapella overlay are done; loop extend is not.
 - [ ] **M5: LLM creative director.** Picks transitions and writes a narrative for the set.
 - [ ] **Later:** a simple waveform and plan viewer, export to rekordbox or
       Mixxx, real-time playback.

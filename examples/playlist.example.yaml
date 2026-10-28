@@ -4,7 +4,7 @@
 
 name: Friday warmup
 keep_order: false        # true = keep this order, only plan transitions
-energy_arc: warmup_peak  # warmup_peak | flat | peak_cooldown
+energy_arc: warmup_peak  # warmup_peak (tempo rises) | flat
 
 tracks:
   - path: ~/Music/dj/artist-one-track-a.mp3

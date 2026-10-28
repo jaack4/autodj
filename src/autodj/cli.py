@@ -44,18 +44,21 @@ def analyze(
             typer.echo(f"  report: {out}/")
 
 
-def _warn_pair(a, b) -> None:
+def _warn_pair(a, b, kind: str) -> None:
     from autodj.camelot import camelot_distance
-    from autodj.planner import tempo_gap
+    from autodj.planner import CUTS, tempo_gap
 
     name_a, name_b = Path(a.path).stem, Path(b.path).stem
     dist = camelot_distance(a.key, b.key)
-    if dist > 1:
+    gap = tempo_gap(a.bpm, b.bpm)
+    if dist > 1 and kind not in CUTS:
         typer.secho(f"  warning: {name_a} -> {name_b}: keys {a.key}/{b.key} are {dist} steps apart; "
-                    f"expect a harmonic clash", fg="yellow")
-    if tempo_gap(a.bpm, b.bpm) > 0.06:
-        typer.secho(f"  warning: {name_a} -> {name_b}: {a.bpm:.1f} vs {b.bpm:.1f} BPM needs a "
-                    f"{tempo_gap(a.bpm, b.bpm):.0%} stretch during the blend", fg="yellow")
+                    f"expect some harmonic clash during the {kind}", fg="yellow")
+    if gap > 0.06:
+        how = ("B starts at A's tempo, then ramps" if kind in CUTS
+               else "B is stretched that far while both play")
+        typer.secho(f"  warning: {name_a} -> {name_b}: {a.bpm:.1f} vs {b.bpm:.1f} BPM is a {gap:.0%} gap ({how})",
+                    fg="yellow")
     for x in (a, b):
         if not x.grid_ok:
             typer.secho(f"  warning: {Path(x.path).stem}'s beat grid drifts ({x.grid_drift_ms:+} ms); "
@@ -104,7 +107,7 @@ def pair(
                                 out_bar=out_bar if out_bar is not None else a.n_bars - max(length, 4))
     plan = MixPlan(name=f"{track_a.stem} -- {track_b.stem}", bpm=bpm,
                    tracks=[PlanTrack(path=a.path), PlanTrack(path=b.path)], transitions=[transition])
-    _warn_pair(a, b)
+    _warn_pair(a, b, transition.type)
     _write_plan(plan, output or OUTPUT_DIR / "plans" / f"{plan.name}{'.' + kind if kind else ''}.json")
 
 
@@ -132,7 +135,8 @@ def build_set(
             how = f"{tr.overlap_bars}-bar {tr.type}" if tr.overlap_bars else tr.type
             typer.echo(f"       -> {how}: bar {tr.out_bar} into bar {tr.in_bar} ({tr.notes[0] if tr.notes else ''})")
             _warn_pair(a.model_copy(update={"key": key}),
-                       analyses[k + 1].model_copy(update={"key": plan.tracks[k + 1].key or analyses[k + 1].key}))
+                       analyses[k + 1].model_copy(update={"key": plan.tracks[k + 1].key or analyses[k + 1].key}),
+                       tr.type)
     _write_plan(plan, output or OUTPUT_DIR / "sets" / f"{plan.name}.json")
 
 
