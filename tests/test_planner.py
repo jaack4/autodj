@@ -191,3 +191,12 @@ def test_leaving_right_before_a_drop_is_penalized(club_track):
     a = club_track()  # drops at 16 and 64
     reasons = {(x.out_bar, x.overlap): x.reasons for x in candidates(a, club_track(), style="smooth")}
     assert any("own drop arrives" in r for r in reasons[(48, 16)])  # blend ends at 64 = A's drop
+
+
+def test_vocals_are_only_carried_within_the_current_section():
+    from autodj.planner import vocal_carry_end_bar
+
+    a = make_analysis([("drop", 0, 16, 0.9), ("outro", 16, 32, 0.4)], vocals=_vocals(32, [(0, 32)]))
+    assert vocal_carry_end_bar(a, 8, 24) == 16  # sung through the swap, but the outro is a new part
+    quiet = a.model_copy(update={"bar_vocals": _vocals(32, [(16, 32)])})
+    assert vocal_carry_end_bar(quiet, 8, 24) == 8  # nothing sung at the swap: nothing to carry

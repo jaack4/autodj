@@ -201,8 +201,9 @@ def test_stem_blend_swaps_parts_and_carries_vocals(club_track):
     from autodj.models import Transition
     from autodj.render import _deck_signal, apply_transition, place
 
+    sung = [0.0] * 64 + [1.0] * 32 + [0.0] * 16  # A sings through its last drop (bars 64-96)
     plan = _plan([Transition(type="stem_blend", out_bar=80, in_bar=0, overlap_bars=16, swap_bar=8)])
-    da, db = _decks(plan, [club_track(bpm=120.0), club_track(bpm=120.0)])
+    da, db = _decks(plan, [club_track(bpm=120.0, vocals=sung), club_track(bpm=120.0)])
     (w,) = place(plan, [da, db])
     apply_transition(w)
     sr = 8000
@@ -297,3 +298,23 @@ def test_double_drop_layers_both_drops(club_track):
     assert _level(mb, sb, mid) == pytest.approx(0.75, abs=0.03)  # B: everything but its drums
     assert _level(mb, sb, w.end + 0.5) == pytest.approx(1.0, abs=0.03)  # then B in full
     assert _level(ma, sa, w.end + 0.05) < 0.01
+
+
+def test_stem_blend_does_not_carry_vocals_into_a_new_section(club_track):
+    from autodj.models import Transition
+    from autodj.render import _deck_signal, apply_transition, place
+
+    sung = [0.0] * 64 + [1.0] * 48  # sings through the drop AND the outro (bars 96-112)
+    plan = _plan([Transition(type="stem_blend", out_bar=88, in_bar=0, overlap_bars=16, swap_bar=4)])
+    da, db = _decks(plan, [club_track(bpm=120.0, vocals=sung), club_track(bpm=120.0)])
+    (w,) = place(plan, [da, db])
+    apply_transition(w)
+    sr = 8000
+    t = np.arange(int(300 * sr)) / sr
+    tone = np.stack([np.sin(2 * np.pi * 1000 * t)] * 2).astype(np.float32)
+    stems = {n: tone * (1.0 if n == "vocals" else 0.0) for n in ("drums", "bass", "other", "vocals")}
+    m0, sig = _deck_signal(da, tone, sr, stems)
+    outro = da.offset + da.bar_time(96)  # A's outro starts mid-blend
+    level = lambda when: float(np.sqrt(2 * np.mean(sig[0, int(when * sr) - m0 : int(when * sr) - m0 + 400] ** 2)))
+    assert level(outro - 2 * w.beat) > 0.9  # still carried inside the drop
+    assert level(outro + 2 * w.beat) < 0.05  # but not into the outro's new vocal part

@@ -112,6 +112,14 @@ def _swap_bar(b: Analysis, in_bar: int, overlap: int) -> int:
     return half - half % 4 if half >= 4 else half
 
 
+def vocal_carry_end_bar(a: Analysis, swap: int, a_end: int) -> int:
+    """Where A's vocals stop being carried in a stem blend: they continue a phrase that's already going
+    at the swap, but never run into a new section of A (e.g. a slow outro vocal over B's beat)."""
+    if a.bar_vocals is None or swap >= a.n_bars or max(a.bar_vocals[max(0, swap - 1) : swap + 1]) <= VOCAL_ON:
+        return swap
+    return min(a_end, a.section_at(swap).end_bar)
+
+
 def _share(values: list[float] | None, start: int, end: int, on: float = VOCAL_ON) -> float:
     """Share of bars in [start, end) above `on` (0 if there's no data)."""
     if values is None or end <= start:
@@ -233,8 +241,8 @@ def score(a: Analysis, b: Analysis, c: Candidate, preferred_overlap: int, style:
         elif any(s.label == "drop" and a_end - 2 <= s.start_bar <= a_end + 4 for s in a.sections):
             add(-0.8, "A leaves just as its own drop arrives (the build-up never pays off)")
     peak = biggest_drop(a)
-    if peak and c.out_bar < peak[1] - 4 and a_end > peak[0] and c.kind != "drop_cut":
-        add(-1.0, "interrupts A's biggest drop")  # blending out of its last 4 bars is fine
+    if peak and c.out_bar < (peak[0] + peak[1]) // 2 and a_end > peak[0] and c.kind != "drop_cut":
+        add(-1.0, "interrupts A's biggest drop")  # blending out of its second half is fine
 
     # Letdown: the drop B arrives at shouldn't be a big step down from A's drops.
     landing = next((s for s in b.sections if s.label == "drop" and s.start_bar >= b_end - 1), None)
@@ -246,8 +254,8 @@ def score(a: Analysis, b: Analysis, c: Candidate, preferred_overlap: int, style:
     if c.kind in BLENDS:
         # A's drop bars under the blend, not counting each drop's last 4 (mixing out of a drop that
         # has played out is normal).
-        a_dropping = sum(1 for k in range(c.out_bar, a_end)
-                         if a.section_at(k).label == "drop" and k < a.section_at(k).end_bar - 4)
+        a_dropping = sum(1 for k in range(c.out_bar, a_end) if a.section_at(k).label == "drop"
+                         and k < (a.section_at(k).start_bar + a.section_at(k).end_bar) // 2)
         b_labels = [b.section_at(k).label for k in range(c.in_bar, b_end)]
         add(-1.0 * a_dropping / c.overlap, "A is dropping during the blend")
         add(-1.0 * b_labels.count("drop") / c.overlap, "B's drop is buried under the blend")
@@ -274,7 +282,9 @@ def score(a: Analysis, b: Analysis, c: Candidate, preferred_overlap: int, style:
         if c.kind == "stem_blend":
             add(0.2, "stem blend: drums, bass and melody swap separately")
             swap = c.out_bar + (c.swap_bar or c.overlap // 2)
-            carried = float(np.mean(np.array(a.bar_vocals[swap:a_end]) > VOCAL_ON)) if a_end > swap else 0.0
+            carry_end = vocal_carry_end_bar(a, swap, a_end)
+            carried = (_share(a.bar_vocals, swap, carry_end) * (carry_end - swap) / (a_end - swap)
+                       if a_end > swap else 0.0)
             if carried >= 0.5:
                 add(0.4, f"A's vocals carry across B's beat ({carried:.0%} of the second half)")
         elif c.kind == "melody_first" or c.kind == "reverb_wash":

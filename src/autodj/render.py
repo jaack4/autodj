@@ -20,7 +20,7 @@ from autodj.audio import load as load_audio
 from autodj.analysis.beats import MIN_CONFIDENCE, onset_offset
 from autodj.loops import extend_analysis, splice_audio
 from autodj.models import Analysis, Loop, MixPlan, PlanTrack, Transition
-from autodj.planner import region_offset_ms
+from autodj.planner import region_offset_ms, vocal_carry_end_bar
 
 LOW_HZ = 200.0
 HIGH_HZ = 2500.0
@@ -284,7 +284,7 @@ def _tape_stop(out: np.ndarray, times: np.ndarray, stop: float, beat: float, sr:
     out[:, r0 : r0 + n] = stopped
 
 
-def _stem_blend(out: Deck, inc: Deck, t0: float, t1: float, ts: float, beat: float) -> None:
+def _stem_blend(out: Deck, inc: Deck, t0: float, t1: float, ts: float, beat: float, vocals_end: float) -> None:
     """Swap the parts one at a time instead of crossfading whole tracks:
     1st half: B's drums creep in (its kick and bass held back by the low band);
     swap downbeat: drums and bass change over;
@@ -298,9 +298,12 @@ def _stem_blend(out: Deck, inc: Deck, t0: float, t1: float, ts: float, beat: flo
     inc.stem_gains["bass"] = [(ts - SWAP_RAMP_S, 0.0), (ts, 1.0)]
     out.stem_gains["bass"] = [(ts - SWAP_RAMP_S, 1.0), (ts, 0.0)]
     inc.stem_gains["other"] = _fade(ts, t1, rising=True)
-    out.stem_gains["other"] = _fade(ts, t1, rising=False)
+    out.stem_gains["other"] = _fade(ts, (ts + t1) / 2, rising=False)  # A clears out soon after B's beat takes over
     inc.stem_gains["vocals"] = _fade(t1, t1 + bar, rising=True)
-    out.stem_gains["vocals"] = _fade(t1, t1 + bar, rising=False)
+    if vocals_end >= t1:
+        out.stem_gains["vocals"] = _fade(t1, t1 + bar, rising=False)
+    else:  # A's phrase (or section) ends before the blend does: let its vocals go there
+        out.stem_gains["vocals"] = _fade(max(t0, vocals_end - beat), vocals_end, rising=False)
 
 
 def apply_transition(w: "TransitionWindow") -> None:
@@ -320,7 +323,9 @@ def apply_transition(w: "TransitionWindow") -> None:
     elif tr.type == "acapella_overlay":
         _acapella_overlay(a, b, w.start, w.end, w.beat)
     elif tr.type == "stem_blend":
-        _stem_blend(a, b, w.start, w.end, w.swap, w.beat)
+        swap_bar = tr.out_bar + (tr.swap_bar if tr.swap_bar is not None else tr.overlap_bars // 2)
+        end_bar = vocal_carry_end_bar(a.analysis, swap_bar, tr.out_bar + tr.overlap_bars)
+        _stem_blend(a, b, w.start, w.end, w.swap, w.beat, a.offset + a.bar_time(end_bar))
     elif tr.type == "melody_first":
         _melody_first(a, b, w.start, w.swap, w.beat)
     elif tr.type == "reverb_wash":

@@ -9,6 +9,7 @@ from autodj.models import Analysis, Loop, Section
 SPLICE_FADE_S = 0.005
 LOOP_LABEL = "loop"
 MIN_TAIL_BARS = 16  # tracks with less than this after their last drop get loop options
+MAX_LOOP_VOCALS = 0.25  # a looped stretch may be at most this vocal (repeated lines sound broken)
 
 
 def _repeat(values: list | None, at: int, length: int, repeats: int) -> list | None:
@@ -89,6 +90,10 @@ def loop_options(a: Analysis) -> list[Loop]:
     for length in (8, 4):
         if last.end_bar - length < last.start_bar:
             continue
+        if a.bar_vocals is not None:
+            sung = np.mean(np.array(a.bar_vocals[last.end_bar - length : last.end_bar]) > 0.5)
+            if sung > MAX_LOOP_VOCALS:
+                continue
         need = MIN_TAIL_BARS - tail
         repeats = int(np.ceil(need / length))
         options.append(Loop(at_bar=last.end_bar, bars=length, repeats=repeats))

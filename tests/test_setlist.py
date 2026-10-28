@@ -68,16 +68,16 @@ def test_best_shift_fixes_clashes_cheaply():
     assert best_shift("8A", "3A", max_shift=0)[0] == 0
 
 
-def test_shifts_chain_from_the_previous_shifted_key(club_track):
+def test_shifts_are_chosen_for_the_whole_set(club_track):
     from autodj.camelot import shift_key
     from autodj.setlist import assign_shifts
 
     entries = [Entry(PlanTrack(path=f"/{k}.mp3"), club_track(key=k, path=f"/{k}.mp3")) for k in ("8A", "1A", "1A")]
     shifted = assign_shifts(entries)
     semis = [e.track.semitones for e, _ in shifted]
-    assert semis == [0, 1, 1]  # 1A +1 semitone = 8A; the third then matches the shifted second
-    assert [a.key for _, a in shifted] == ["8A", "8A", "8A"]
-    assert shift_key("1A", 1) == "8A"
+    assert semis == [-1, 0, 0]  # shifting the one odd track out is cheaper than shifting the other two
+    assert len({a.key for _, a in shifted}) == 1
+    assert shift_key("8A", -1) == "1A"
 
 
 def test_uncertain_keys_are_not_shifted(club_track):

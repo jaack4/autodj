@@ -417,3 +417,36 @@ def eval_keys(
         s = summarize(rows, m)
         typer.echo(f"{m:15s} {s['exact']:6.0%} {s['any_source']:11.0%} {s['compatible']:19.0%} {s['mirex']:6.2f}")
     typer.echo("\n= matches the reference, ~ matches a minority source; (confidence)")
+
+
+def _verdict(plan_file: Path, number: int, liked: bool, note: str) -> None:
+    from autodj import feedback
+    from autodj.models import MixPlan
+
+    plan = MixPlan.model_validate_json(plan_file.read_text())
+    if not 1 <= number <= len(plan.transitions):
+        raise typer.BadParameter(f"transition number must be 1..{len(plan.transitions)}")
+    v = feedback.record(plan, number, liked, note)
+    loop = f", loop {v.loop.bars}x{v.loop.repeats}" if v.loop else ""
+    typer.echo(f"{'liked' if liked else 'disliked'}: {v.from_track} -> {v.to_track} ({v.type}, bar {v.out_bar} "
+               f"into bar {v.in_bar}, {v.overlap} bars{loop}). Future plans will {'keep' if liked else 'avoid'} it.")
+
+
+@app.command()
+def like(
+    plan_file: Annotated[Path, typer.Argument(exists=True, dir_okay=False)],
+    number: Annotated[int, typer.Argument(help="Transition number (1 = first)")],
+    note: Annotated[str, typer.Option(help="Why (for your own reference)")] = "",
+) -> None:
+    """Remember a transition you liked: future plans keep the pair together and reuse it."""
+    _verdict(plan_file, number, True, note)
+
+
+@app.command()
+def dislike(
+    plan_file: Annotated[Path, typer.Argument(exists=True, dir_okay=False)],
+    number: Annotated[int, typer.Argument(help="Transition number (1 = first)")],
+    note: Annotated[str, typer.Option(help="Why (for your own reference)")] = "",
+) -> None:
+    """Remember a transition you disliked: future plans avoid it."""
+    _verdict(plan_file, number, False, note)

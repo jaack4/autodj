@@ -54,3 +54,10 @@ def test_planner_loops_a_short_tail_to_blend_after_the_last_drop():
     best = max(looped, key=lambda c: c.score)
     assert best.out_bar >= 64 - 4 and best.overlap >= 8  # blends from the loop, after the drop has played
     assert any("loops A's last" in r for r in best.reasons)
+
+
+def test_no_loops_over_vocals():
+    a = _short_tail()
+    sung = a.model_copy(update={"bar_vocals": [0.0] * 56 + [1.0] * 8 + [0.0] * 4})  # vocals in the drop's last 8
+    opts = loop_options(sung)
+    assert Loop(at_bar=64, bars=8, repeats=2) not in opts and Loop(at_bar=64, bars=4, repeats=3) not in opts

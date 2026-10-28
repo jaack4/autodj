@@ -10,6 +10,7 @@ import yaml
 
 from autodj.analysis import analyze_file
 from autodj.camelot import camelot_distance, parse_key, shift_key
+from autodj import feedback
 from autodj.mashups import find_mashups
 from autodj.models import Analysis, MixPlan, PlanTrack
 from autodj.planner import (UNCERTAIN_KEY, Candidate, best_transition, candidates, character_jump, drop_character,
@@ -92,7 +93,8 @@ def _trusted(a: Analysis, b: Analysis) -> bool:
     return min(a.key_confidence, b.key_confidence) >= UNCERTAIN_KEY
 
 
-def pair_cost(a: Analysis, b: Analysis, transition: Candidate, arc: str, max_shift: int = MAX_SHIFT) -> float:
+def pair_cost(a: Analysis, b: Analysis, transition: Candidate, arc: str, max_shift: int = MAX_SHIFT,
+              verdicts: list | None = None) -> float:
     if _trusted(a, b):
         _, k_cost = best_shift(a.key, b.key, max_shift)
     else:  # an uncertain key shouldn't drive the order much
@@ -104,7 +106,14 @@ def pair_cost(a: Analysis, b: Analysis, transition: Candidate, arc: str, max_shi
     vibe_cost = 0.4 * max(0.0, abs(vibe) - 0.5)
     if arc == "warmup_peak" and vibe < -1.0:
         vibe_cost += 0.3  # the energy falls back
-    return k_cost + tempo_cost + arc_cost + vibe_cost - 0.5 * transition.score
+    feedback_cost = 0.0
+    if verdicts:
+        mine = feedback.for_pair(verdicts, a.path, b.path)
+        if any(v.liked for v in mine):
+            feedback_cost = -feedback.LIKED_PAIR_BONUS
+        elif mine:
+            feedback_cost = feedback.DISLIKED_PAIR_PENALTY
+    return k_cost + tempo_cost + arc_cost + vibe_cost + feedback_cost - 0.5 * transition.score
 
 
 def _held_karp(cost: np.ndarray) -> list[int]:
@@ -153,13 +162,17 @@ def _greedy_2opt(cost: np.ndarray) -> list[int]:
 
 
 def order_tracks(entries: list[Entry], arc: str, max_shift: int = MAX_SHIFT,
-                 style: str = "smooth") -> tuple[list[int], dict[tuple[int, int], Candidate]]:
+                 style: str = "smooth", verdicts: list | None = None) -> tuple[list[int], dict[tuple[int, int], Candidate]]:
     n = len(entries)
     transitions: dict[tuple[int, int], Candidate] = {}
     cost = np.zeros((n, n))
     for i, j in itertools.permutations(range(n), 2):
         transitions[i, j] = best_transition(entries[i].analysis, entries[j].analysis, style=style)
-        cost[i, j] = pair_cost(entries[i].analysis, entries[j].analysis, transitions[i, j], arc, max_shift)
+        if feedback.for_pair(verdicts or [], entries[i].analysis.path, entries[j].analysis.path):
+            transitions[i, j] = _with_feedback(
+                candidates(entries[i].analysis, entries[j].analysis, style=style) or [transitions[i, j]],
+                entries[i].analysis, entries[j].analysis, verdicts)[0]
+        cost[i, j] = pair_cost(entries[i].analysis, entries[j].analysis, transitions[i, j], arc, max_shift, verdicts)
     if n <= 2:
         order = min(itertools.permutations(range(n)), key=lambda o: _path_cost(list(o), cost))
         return list(order), transitions
@@ -177,17 +190,20 @@ def build_plan(
     if arc not in ARCS:
         arc = "flat"
     entries = analyze_entries(tracks, stems=stems, log=log)
+    verdicts = feedback.load()
+    if verdicts:
+        log(f"using {len(verdicts)} transition verdict(s) from {feedback.FEEDBACK_FILE}")
     if len(entries) < 2:
         raise ValueError("A set needs at least two readable tracks")
     log(f"planning {len(entries)} tracks")
     if keep_order:
         order = list(range(len(entries)))
     else:
-        order, _ = order_tracks(entries, "flat" if arc == "journey" else arc, max_shift, style)
+        order, _ = order_tracks(entries, "flat" if arc == "journey" else arc, max_shift, style, verdicts)
     cache: dict = {}
     if not keep_order:
-        order = refine_order(entries, order, arc, max_shift, style, cache, log)
-    shifted, chosen = plan_order([entries[i] for i in order], max_shift, style, cache)
+        order = refine_order(entries, order, arc, max_shift, style, cache, log, verdicts)
+    shifted, chosen = plan_order([entries[i] for i in order], max_shift, style, cache, verdicts)
     plan_transitions = []
     for c in chosen:
         t = c.transition()
@@ -214,8 +230,25 @@ def played_analyses(plan: MixPlan, analyses: list[Analysis]) -> list[Analysis]:
 VARIETY = {"mixed": (0.5, 0.25, 0.15), "smooth": (0.35, 0.1, 0.05)}
 
 
-def plan_order(ordered: list[Entry], max_shift: int, style: str, cache: dict | None = None
-               ) -> tuple[list[tuple[Entry, Analysis]], list[Candidate]]:
+def _with_feedback(ranked: list[Candidate], a: Analysis, b: Analysis, verdicts: list | None) -> list[Candidate]:
+    """Your verdicts applied: liked transitions get a bonus, disliked ones a penalty (copies, best first)."""
+    mine = feedback.for_pair(verdicts or [], a.path, b.path)
+    if not mine:
+        return ranked
+    out = []
+    for c in ranked:
+        for v in mine:
+            if v.matches(c.kind, c.out_bar, c.in_bar, c.overlap, c.loop):
+                delta = feedback.LIKED_TRANSITION_BONUS if v.liked else -feedback.DISLIKED_TRANSITION_PENALTY
+                c = dataclasses.replace(c, score=round(c.score + delta, 3),
+                                        reasons=c.reasons + [f"{delta:+.2f} you {'liked' if v.liked else 'disliked'} "
+                                                             f"this transition"])
+        out.append(c)
+    return sorted(out, key=lambda c: c.score, reverse=True)
+
+
+def plan_order(ordered: list[Entry], max_shift: int, style: str, cache: dict | None = None,
+               verdicts: list | None = None) -> tuple[list[tuple[Entry, Analysis]], list[Candidate]]:
     """Key shifts and transitions for tracks in this order. `cache` reuses candidate lists across orders."""
     cache = {} if cache is None else cache
     shifted = assign_shifts(ordered, max_shift)
@@ -226,7 +259,7 @@ def plan_order(ordered: list[Entry], max_shift: int, style: str, cache: dict | N
         key = (ea.track.path, eb.track.path, a.key, b.key, min_out, style)
         if key not in cache:
             cache[key] = candidates(a, b, min_out_bar=min_out, style=style)
-        c = _varied_transition(a, b, min_out, history, style, ranked=cache[key])
+        c = _varied_transition(a, b, min_out, history, style, ranked=_with_feedback(cache[key], a, b, verdicts))
         history.append(c.kind)
         min_out = min_out_after(c, b)
         chosen.append(c)
@@ -253,10 +286,11 @@ def journey_target(position: int, n: int) -> float:
     return 1.0 - 0.5 * (x - JOURNEY_PEAK) / (1 - JOURNEY_PEAK)
 
 
-def order_cost(shifted: list[tuple[Entry, Analysis]], chosen: list[Candidate], arc: str) -> float:
+def order_cost(shifted: list[tuple[Entry, Analysis]], chosen: list[Candidate], arc: str,
+               verdicts: list | None = None) -> float:
     """Whole-set cost of a planned order (keys already shifted, transitions already chosen)."""
     pairwise_arc = "flat" if arc == "journey" else arc
-    cost = sum(pair_cost(a, b, c, pairwise_arc, max_shift=0)
+    cost = sum(pair_cost(a, b, c, pairwise_arc, max_shift=0, verdicts=verdicts)
                for ((_, a), (_, b)), c in zip(zip(shifted, shifted[1:]), chosen))
     if arc == "journey":
         ranks = intensity_ranks([a for _, a in shifted])
@@ -268,13 +302,13 @@ REFINE_SECONDS = 120.0
 
 
 def refine_order(entries: list[Entry], order: list[int], arc: str, max_shift: int, style: str, cache: dict,
-                 log=print) -> list[int]:
+                 log=print, verdicts: list | None = None) -> list[int]:
     """Improve the order by planning whole sets: try swapping any two tracks and reversing any run,
     keep whatever lowers the real cost (actual shifts, transitions, variety, loops)."""
     import time
 
     def cost(o: list[int]) -> float:
-        return order_cost(*plan_order([entries[i] for i in o], max_shift, style, cache), arc)
+        return order_cost(*plan_order([entries[i] for i in o], max_shift, style, cache, verdicts), arc, verdicts)
 
     best, best_cost = list(order), cost(order)
     log(f"refining the order (start cost {best_cost:+.2f})")
@@ -318,18 +352,36 @@ def _varied_transition(a: Analysis, b: Analysis, min_out: int, history: list[str
 
 
 def assign_shifts(ordered: list[Entry], max_shift: int = MAX_SHIFT) -> list[tuple[Entry, Analysis]]:
-    """Give each track a pitch shift (semitones) matching the previous track's *shifted* key.
-
-    Returns (entry with track.semitones set, analysis with the shifted key) in order.
+    """Pick every track's pitch shift together (dynamic programming over shifts -max..+max) so each
+    neighbour pair is key-compatible with as little total shifting as possible. Tracks with uncertain
+    keys stay unshifted. Returns (entry with track.semitones set, analysis with the shifted key) in order.
     """
+    n = len(ordered)
+    shifts = list(range(-max_shift, max_shift + 1)) if max_shift else [0]
+
+    def allowed(i: int) -> list[int]:
+        return shifts if ordered[i].analysis.key_confidence >= UNCERTAIN_KEY else [0]
+
+    def step(i: int, s_prev: int, s: int) -> float:
+        a, b = ordered[i - 1].analysis, ordered[i].analysis
+        link = key_cost(shift_key(a.key, s_prev), shift_key(b.key, s)) if _trusted(a, b) else 0.0
+        return link + SHIFT_PENALTY[abs(s)]
+
+    best = [{s: (SHIFT_PENALTY[abs(s)], None) for s in allowed(0)}]
+    for i in range(1, n):
+        layer = {}
+        for s in allowed(i):
+            layer[s] = min((best[i - 1][p][0] + step(i, p, s), p) for p in best[i - 1])
+        best.append(layer)
+    s = min(best[-1], key=lambda k: (best[-1][k][0], abs(k)))
+    picked = [s]
+    for i in range(n - 1, 0, -1):
+        s = best[i][s][1]
+        picked.append(s)
+    picked.reverse()
+
     out = []
-    prev: Analysis | None = None
-    for e in ordered:
-        a, s = e.analysis, 0
-        if prev is not None and max_shift and _trusted(prev, a):
-            s, _ = best_shift(prev.key, a.key, max_shift)
-        if s:
-            a = a.model_copy(update={"key": shift_key(a.key, s)})
+    for e, s in zip(ordered, picked):
+        a = e.analysis.model_copy(update={"key": shift_key(e.analysis.key, s)}) if s else e.analysis
         out.append((Entry(e.track.model_copy(update={"semitones": s}), e.analysis), a))
-        prev = a
     return out
