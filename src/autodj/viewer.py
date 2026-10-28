@@ -1,8 +1,10 @@
 """A self-contained HTML page for listening to a rendered mix: track lanes with sections,
 transitions you can click to jump to, and the planner's reasons."""
 
+import base64
 import html
 import json
+import subprocess
 from pathlib import Path
 
 from autodj.models import MixPlan
@@ -13,6 +15,7 @@ SECTION_COLORS = {
     "break": "#5cb85c", "body": "#8a8f6a", "outro": "#5b7083",
 }
 PREROLL_BARS = 4  # jump this far ahead of a transition so you hear it coming
+EMBED_MAX_BYTES = 60_000_000  # embed the MP3 in the page up to here (~40 min at 192 kbps); link it beyond
 
 
 def _data(plan: MixPlan, decks: list[Deck], windows: list[TransitionWindow], checks: list[dict]) -> dict:
@@ -42,11 +45,25 @@ def _data(plan: MixPlan, decks: list[Deck], windows: list[TransitionWindow], che
             "transitions": transitions, "colors": SECTION_COLORS}
 
 
-def write_viewer(path: Path, wav: Path, plan: MixPlan, decks: list[Deck], windows: list[TransitionWindow],
+def encode_mp3(wav: Path) -> Path:
+    """A 192 kbps MP3 next to the WAV: browsers play it everywhere (unlike 24-bit WAV) and it's ~10x smaller."""
+    mp3 = wav.with_suffix(".mp3")
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", str(wav), "-codec:a", "libmp3lame", "-b:a", "192k", str(mp3)],
+                   check=True)
+    return mp3
+
+
+def write_viewer(path: Path, mp3: Path, plan: MixPlan, decks: list[Deck], windows: list[TransitionWindow],
                  checks: list[dict]) -> Path:
+    """Write the viewer. The MP3 is embedded so the page works on its own (e.g. opened from another folder)."""
     data = json.dumps(_data(plan, decks, windows, checks))
-    page = TEMPLATE.replace("__TITLE__", html.escape(plan.name)).replace("__WAV__", html.escape(wav.name))
-    path.write_text(page.replace("__DATA__", data.replace("</", "<\\/")))
+    if mp3.stat().st_size <= EMBED_MAX_BYTES:
+        src = "data:audio/mpeg;base64," + base64.b64encode(mp3.read_bytes()).decode()
+    else:
+        src = html.escape(mp3.name)
+    page = TEMPLATE.replace("__TITLE__", html.escape(plan.name)).replace("__AUDIO_FILE__", html.escape(mp3.name))
+    page = page.replace("__DATA__", data.replace("</", "<\\/"))
+    path.write_text(page.replace("__AUDIO_SRC__", src))
     return path
 
 
@@ -78,7 +95,9 @@ TEMPLATE = """<!doctype html>
   .notes { color:var(--dim); font-size:12px; } .time { font-variant-numeric:tabular-nums; color:var(--accent); }
 </style></head><body>
 <h1>__TITLE__</h1><div class="sub" id="sub"></div>
-<audio id="audio" controls src="__WAV__"></audio>
+<audio id="audio" controls preload="auto" src="__AUDIO_SRC__"></audio>
+<div id="audioerr" style="display:none;color:#f0a35e;margin:-8px 0 16px">Couldn't load the audio here.
+  Open <b>__AUDIO_FILE__</b> (next to this page) in a browser or music player instead.</div>
 <div id="timeline"><div id="inner"><div id="head"></div></div></div>
 <div class="legend" id="legend"></div>
 <table><thead><tr><th>Time</th><th>Transition</th><th>From → to</th><th>Planner's reasons</th><th>Check</th></tr></thead>
@@ -111,6 +130,7 @@ D.transitions.forEach(x => {
   r.children[3].textContent = x.notes.join(" · ");
   r.onclick = () => { audio.currentTime = x.seek; audio.play(); };
 });
+audio.addEventListener("error", () => { document.getElementById("audioerr").style.display = "block"; });
 tl.onclick = e => { const b = inner.getBoundingClientRect();
   audio.currentTime = Math.min(D.duration, Math.max(0, D.duration * (e.clientX - b.left) / b.width)); audio.play(); };
 const tick = () => { head.style.left = pct(audio.currentTime); requestAnimationFrame(tick); };

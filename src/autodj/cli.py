@@ -160,7 +160,7 @@ def render(
     from autodj.models import MixPlan
     from autodj.render import mix_alignment
     from autodj.render import render as render_plan
-    from autodj.viewer import write_viewer
+    from autodj.viewer import encode_mp3, write_viewer
 
     plan = MixPlan.model_validate_json(plan_file.read_text())
     mix, decks, windows = render_plan(plan, log=lambda msg: typer.echo(msg, err=True))
@@ -206,6 +206,7 @@ def render(
                    f"nudge {w.nudge_ms:+.0f} ms ({w.nudge_source}): kicks {flam:.1f} ms apart "
                    f"(confidence {conf_a:.1f}/{conf_b:.1f}), {verdict}")
     output.with_suffix(".tracklist.json").write_text(json.dumps(tracklist, indent=2))
-    viewer = write_viewer(output.with_suffix(".html"), output, plan, decks, windows, checks)
-    typer.echo(f"mix: {output}  ({mix.shape[1] / plan.sample_rate / 60:.1f} min)")
+    mp3 = encode_mp3(output)
+    viewer = write_viewer(output.with_suffix(".html"), mp3, plan, decks, windows, checks)
+    typer.echo(f"mix: {output}  ({mix.shape[1] / plan.sample_rate / 60:.1f} min; MP3: {mp3.name})")
     typer.echo(f"viewer: {viewer}  (open it in a browser to listen and jump between transitions)")
