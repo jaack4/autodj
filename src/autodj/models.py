@@ -55,6 +55,11 @@ class Analysis(BaseModel):
 class PlanTrack(BaseModel):
     path: str
     start_bar: int = 0  # first track only: where playback begins
+    bpm: float | None = None  # tempo the track settles at when playing solo (default: native)
+    bpm_hint: float | None = None  # passed to analysis to resolve half/double time
+    key: str | None = None  # user-provided key (Camelot), overrides detection when planning
+    title: str | None = None
+    artist: str | None = None
 
 
 class Transition(BaseModel):
@@ -63,11 +68,14 @@ class Transition(BaseModel):
     in_bar: int = 0  # bar of the incoming track that lands on out_bar
     overlap_bars: int = 16
     swap_bar: int | None = None  # bar within the overlap where basslines swap (default: halfway)
+    ramp_bars: int = 16  # after the blend, the incoming track glides to its own tempo over this many bars
+    notes: list[str] = []  # planner's reasons, for humans
 
 
 class MixPlan(BaseModel):
-    version: int = 1
-    bpm: float  # constant master tempo; every track is time-stretched to it
+    version: int = 2
+    name: str = "mix"
+    bpm: float | None = None  # if set, every track is locked to this tempo (no ramps)
     sample_rate: int = 44100
     target_lufs: float = -9.0  # per-track loudness before the master limiter
     tracks: list[PlanTrack]

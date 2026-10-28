@@ -182,10 +182,13 @@ def grid_alignment(offsets: np.ndarray, confidence: np.ndarray) -> tuple[float, 
     return float(np.median(good) * 1000), float(drift * 1000)
 
 
-def onset_offset(y: np.ndarray, sr: int, beats: np.ndarray, period: float) -> tuple[float, float]:
-    """Single kick-band offset (ms) of a stretch of audio vs a grid, and its confidence (peak/mean, ~1 = no kicks)."""
+def onset_offset(
+    y: np.ndarray, sr: int, beats: np.ndarray, period: float, center_ms: float = 0.0
+) -> tuple[float, float]:
+    """Kick-band offset (ms) of a stretch of audio vs a grid, searched within +-1/4 beat of
+    center_ms, and its confidence (peak/mean, ~1 = no kicks)."""
     env, fps = _kick_env(y, sr)
-    shift, confidence = _best_shift(env, fps, beats, period)
+    shift, confidence = _best_shift(env, fps, beats, period, center_ms / 1000)
     return shift * 1000, confidence
 
 

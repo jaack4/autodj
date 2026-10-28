@@ -25,8 +25,9 @@ def _sha256(path: Path) -> str:
         return hashlib.file_digest(f, "sha256").hexdigest()
 
 
-def _cache_path(sha: str, backend: str) -> Path:
-    return CACHE_DIR / f"{sha[:16]}.{backend}.v{ANALYSIS_VERSION}.json"
+def _cache_path(sha: str, backend: str, bpm_hint: float | None) -> Path:
+    hint = f".bpm{bpm_hint:g}" if bpm_hint else ""
+    return CACHE_DIR / f"{sha[:16]}.{backend}{hint}.v{ANALYSIS_VERSION}.json"
 
 
 def _analyze(path: Path, sha: str, backend: str, bpm_hint: float | None) -> Analysis:
@@ -87,7 +88,7 @@ def analyze_file(
     else:
         order = (backend,)
     for i, b in enumerate(order):
-        cached = _cache_path(sha, b)
+        cached = _cache_path(sha, b, bpm_hint)
         if cached.exists() and not force:
             return Analysis.model_validate_json(cached.read_text())
         try:

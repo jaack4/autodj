@@ -122,13 +122,13 @@ def score(a: Analysis, b: Analysis, c: Candidate, preferred_overlap: int) -> Can
     return c
 
 
-def candidates(a: Analysis, b: Analysis) -> list[Candidate]:
-    """All phrase-aligned candidates, best first."""
+def candidates(a: Analysis, b: Analysis, min_out_bar: int = 0) -> list[Candidate]:
+    """All phrase-aligned candidates, best first. min_out_bar keeps A's previous blend clear."""
     overlaps = _overlaps(a, b)
     out: list[Candidate] = []
     for overlap in overlaps:
         outs = {s.start_bar + 4 * k for s in a.sections for k in range(max(1, (s.end_bar - s.start_bar) // 4))}
-        outs = {o for o in outs if o + overlap <= a.n_bars and o >= a.n_bars // 3}
+        outs = {o for o in outs if o + overlap <= a.n_bars and o >= max(a.n_bars // 3, min_out_bar)}
         ins = {s.start_bar for s in b.sections if s.start_bar <= MAX_INCOMING_SKIP * b.n_bars} | {0}
         ins = {i for i in ins if i + overlap <= b.n_bars}
         for o in outs:
@@ -138,8 +138,8 @@ def candidates(a: Analysis, b: Analysis) -> list[Candidate]:
     return sorted(out, key=lambda c: c.score, reverse=True)
 
 
-def best_transition(a: Analysis, b: Analysis) -> Candidate:
-    found = candidates(a, b)
+def best_transition(a: Analysis, b: Analysis, min_out_bar: int = 0) -> Candidate:
+    found = candidates(a, b, min_out_bar)
     if not found:
         raise ValueError(f"No transition fits between {a.path} and {b.path}")
     return found[0]

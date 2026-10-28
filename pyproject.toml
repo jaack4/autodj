@@ -16,6 +16,7 @@ dependencies = [
     "pedalboard>=0.9.26",
     "pydantic>=2.14.1",
     "pyloudnorm>=0.2.0",
+    "pyyaml>=6.0.3",
     "scipy>=1.18.1",
     "soundfile>=0.14.0",
     "typer>=0.27.3",
