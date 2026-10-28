@@ -8,6 +8,7 @@ from pathlib import Path
 import anthropic
 from pydantic import BaseModel, ValidationError
 
+from autodj.camelot import shift_key
 from autodj.models import Analysis, MixPlan
 from autodj.planner import Candidate, best_transition, candidates, min_out_after
 
@@ -132,7 +133,8 @@ def build_prompt(plan: MixPlan, analyses: list[Analysis], menus: list[Options]) 
     tracks = [{
         "position": i + 1,
         "name": " - ".join(x for x in (t.artist, t.title) if x) or Path(a.path).stem,
-        "bpm": round(a.bpm, 1), "key": t.key or a.key, "bars": a.n_bars, "seconds": round(a.duration),
+        "bpm": round(a.bpm, 1), "key": shift_key(t.key or a.key, t.semitones),
+        "pitch_shift_semitones": t.semitones, "bars": a.n_bars, "seconds": round(a.duration),
         "sections": _section_summary(a),
     } for i, (t, a) in enumerate(zip(plan.tracks, analyses))]
     transitions = []

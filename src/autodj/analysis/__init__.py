@@ -15,7 +15,7 @@ from autodj.analysis.structure import bar_features, novelty, segment
 from autodj.camelot import key_name, to_camelot
 from autodj.models import Analysis
 
-ANALYSIS_VERSION = 6
+ANALYSIS_VERSION = 7
 ANALYSIS_SR = 22050
 CACHE_DIR = Path(".cache/analysis")
 BACKENDS = ("beat_this", "heuristic")  # downbeat methods
@@ -90,8 +90,19 @@ def analyze_file(
         features = stem_bar_features({k: str(v) for k, v in paths.items()}, a.path, a.downbeats)
         a = a.model_copy(update={"sections": sections_from_stems(a, features), "sections_mix": a.sections,
                                  "sections_source": "stems"})
+        a = a.model_copy(update=_stem_key(paths))
         _cache_path(a.sha256, a.beat_backend, bpm_hint).write_text(a.model_dump_json(indent=1))
     return a
+
+
+def _stem_key(paths: dict) -> dict:
+    """Key from the harmonic stems plus the bass line (more reliable than the full mix; see eval-keys)."""
+    from autodj.analysis.key import describe, key_from_stems
+
+    other, vocals, bass = (load_audio(paths[n], sr=ANALYSIS_SR, mono=True)[0] for n in ("other", "vocals", "bass"))
+    n = min(len(other), len(vocals), len(bass))
+    code, confidence = key_from_stems(other[:n] + vocals[:n], bass[:n], ANALYSIS_SR)
+    return {"key": code, "key_name": describe(code), "key_confidence": confidence, "key_source": "stems"}
 
 
 def _analyze_cached(path: Path, backend: str, bpm_hint: float | None, force: bool) -> Analysis:

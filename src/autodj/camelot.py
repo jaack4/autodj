@@ -45,6 +45,14 @@ def _split(code: str) -> tuple[int, str]:
     return int(code[:-1]), code[-1]
 
 
+def shift_key(code: str, semitones: int) -> str:
+    """The key after pitch-shifting: +1 semitone is 7 steps round the Camelot wheel, +2 is 2 steps."""
+    code = parse_key(code)
+    minor = code.endswith("A")
+    pc = next(p for p in range(12) if to_camelot(p, minor) == code)
+    return to_camelot((pc + semitones) % 12, minor)
+
+
 def camelot_distance(a: str, b: str) -> int:
     """Steps on the wheel: 0 same key, 1 adjacent or relative major/minor, more is riskier."""
     na, la = _split(a)

@@ -42,3 +42,12 @@ def test_parse_key_rejects_garbage():
 )
 def test_camelot_distance(a, b, d):
     assert camelot_distance(a, b) == d
+
+
+@pytest.mark.parametrize(("code", "semitones", "shifted"), [
+    ("8A", 0, "8A"), ("8A", 1, "3A"), ("8A", -1, "1A"), ("8A", 2, "10A"), ("8A", -2, "6A"), ("12B", 1, "7B"),
+])
+def test_shift_key(code, semitones, shifted):
+    from autodj.camelot import shift_key
+
+    assert shift_key(code, semitones) == shifted

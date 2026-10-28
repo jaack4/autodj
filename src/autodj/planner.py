@@ -14,6 +14,7 @@ OVERLAPS_BY_KEY_DISTANCE = {0: (16, 32, 8), 1: (16, 32, 8), 2: (8, 16), 3: (8, 4
 SHORTEST_OVERLAPS = (4, 8)
 MAX_INCOMING_SKIP = 0.4  # never start the incoming track past 40% of its bars
 SPLICE_TOLERANCE_MS = 25.0
+UNCERTAIN_KEY = 0.03  # key confidence below this: don't trust the key to rule anything out
 
 
 BLENDS = ("bass_swap_blend", "filter_sweep")
@@ -84,7 +85,7 @@ def region_offset_ms(a: Analysis, start: int, end: int) -> tuple[float, bool]:
 def key_distance(a: Analysis, b: Analysis) -> int:
     d = camelot_distance(a.key, b.key)
     # An uncertain key estimate shouldn't force a short blend on its own.
-    if min(a.key_confidence, b.key_confidence) < 0.05:
+    if min(a.key_confidence, b.key_confidence) < UNCERTAIN_KEY:
         d = min(d, 2)
     return d
 
@@ -162,13 +163,13 @@ def score(a: Analysis, b: Analysis, c: Candidate, preferred_overlap: int) -> Can
             if key_distance(a, b) >= 2:
                 add(0.3, "filters hide the key clash")
     elif c.kind == "acapella_overlay":
-        add(0.2, "B's vocal over A's instrumental")
+        add(-0.2, "acapella overlay (a special move: best used sparingly)")
         vb = np.array(b.bar_vocals[c.in_bar : b_end])
         add(0.5 * float((vb > VOCAL_ON).mean()) - 0.5, f"B sings in {(vb > VOCAL_ON).mean():.0%} of the overlay")
         if b_end in b.section_starts():
-            add(0.4, "B's beat comes in on a section change")
+            add(0.3, "B's beat comes in on a section change")
             if b.section_at(b_end).label == "drop":
-                add(0.4, "B's beat comes in on its drop")
+                add(0.3, "B's beat comes in on its drop")
         a_labels = [a.section_at(k).label for k in range(c.out_bar, a_end)]
         add(-0.5 * a_labels.count("break") / c.overlap, "A's instrumental is a breakdown (little beat to sing over)")
         if not region_offset_ms(a, c.out_bar, a_end)[1]:

@@ -59,9 +59,13 @@ start time and, for every blend, how far apart the two tracks' kicks are
 *Listen for:* kicks that flam or gallop during blends, bass swaps landing on
 the 1, and cuts landing on the 1.
 
-Options: `--stems` (separates vocals with Demucs, ~30 s per track: avoids
-vocal clashes and enables acapella overlays), `--keep-order`,
-`--arc flat|warmup_peak`, `--bpm 126` (lock everything to one tempo).
+Options: `--stems` (separates stems with Demucs, ~30 s per track: better keys
+and sections, avoids vocal clashes, enables acapella overlays), `--keep-order`,
+`--arc flat|warmup_peak`, `--bpm 126` (lock everything to one tempo),
+`--max-shift 2` (pitch-shift tracks up to 2 semitones so keys match; 0 = off).
+Keys you know (from djay, Rekordbox, Beatport...) can go in a playlist file and
+override detection. `autodj eval-keys <folder>` compares key detectors against
+references in `labels/keys.json` (see [docs/keys-findings.md](docs/keys-findings.md)).
 
 **3. Try one specific transition**
 ```sh

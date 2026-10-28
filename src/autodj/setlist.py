@@ -8,9 +8,9 @@ import numpy as np
 import yaml
 
 from autodj.analysis import analyze_file
-from autodj.camelot import camelot_distance, parse_key
+from autodj.camelot import camelot_distance, parse_key, shift_key
 from autodj.models import Analysis, MixPlan, PlanTrack
-from autodj.planner import Candidate, best_transition, min_out_after, tempo_gap
+from autodj.planner import UNCERTAIN_KEY, Candidate, best_transition, candidates, min_out_after, tempo_gap
 
 AUDIO_EXTENSIONS = {".mp3", ".wav", ".flac", ".aiff", ".aif", ".m4a", ".ogg"}
 MIN_TRACK_BARS = 16  # shorter files (jingles, snippets) are skipped
@@ -66,13 +66,35 @@ def analyze_entries(tracks: list[PlanTrack], stems: bool = False, log=print) -> 
     return entries
 
 
-def pair_cost(a: Analysis, b: Analysis, transition: Candidate, arc: str) -> float:
-    d = camelot_distance(a.key, b.key)
-    key_cost = {0: 0.0, 1: 0.3, 2: 1.0}.get(d, 2.0 + 0.3 * (d - 3))
-    key_cost *= min(1.0, 0.3 + min(a.key_confidence, b.key_confidence) / 0.15)  # trust uncertain keys less
+SHIFT_PENALTY = {0: 0.0, 1: 0.2, 2: 0.5}  # in key-cost units: shift only when it clearly beats a clash
+MAX_SHIFT = 2
+
+
+def key_cost(a_key: str, b_key: str) -> float:
+    d = camelot_distance(a_key, b_key)
+    return {0: 0.0, 1: 0.3, 2: 1.0}.get(d, 2.0 + 0.3 * (d - 3))
+
+
+def best_shift(a_key: str, b_key: str, max_shift: int = MAX_SHIFT) -> tuple[int, float]:
+    """Pitch shift for B (within +-max_shift of 0) that best matches A's key: (semitones, key cost incl. penalty)."""
+    options = [(key_cost(a_key, shift_key(b_key, s)) + SHIFT_PENALTY[abs(s)], abs(s), s)
+               for s in range(-max_shift, max_shift + 1)]
+    cost, _, s = min(options)
+    return s, cost
+
+
+def _trusted(a: Analysis, b: Analysis) -> bool:
+    return min(a.key_confidence, b.key_confidence) >= UNCERTAIN_KEY
+
+
+def pair_cost(a: Analysis, b: Analysis, transition: Candidate, arc: str, max_shift: int = MAX_SHIFT) -> float:
+    if _trusted(a, b):
+        _, k_cost = best_shift(a.key, b.key, max_shift)
+    else:  # an uncertain key shouldn't drive the order much
+        k_cost = 0.3 * key_cost(a.key, b.key)
     tempo_cost = (tempo_gap(a.bpm, b.bpm) / 0.04) ** 2  # 2% -> 0.25, 4% -> 1, 8% -> 4
     arc_cost = 0.5 if arc == "warmup_peak" and b.bpm < a.bpm - 1 else 0.0
-    return key_cost + tempo_cost + arc_cost - 0.5 * transition.score
+    return k_cost + tempo_cost + arc_cost - 0.5 * transition.score
 
 
 def _held_karp(cost: np.ndarray) -> list[int]:
@@ -120,13 +142,13 @@ def _greedy_2opt(cost: np.ndarray) -> list[int]:
     return best
 
 
-def order_tracks(entries: list[Entry], arc: str) -> tuple[list[int], dict[tuple[int, int], Candidate]]:
+def order_tracks(entries: list[Entry], arc: str, max_shift: int = MAX_SHIFT) -> tuple[list[int], dict[tuple[int, int], Candidate]]:
     n = len(entries)
     transitions: dict[tuple[int, int], Candidate] = {}
     cost = np.zeros((n, n))
     for i, j in itertools.permutations(range(n), 2):
         transitions[i, j] = best_transition(entries[i].analysis, entries[j].analysis)
-        cost[i, j] = pair_cost(entries[i].analysis, entries[j].analysis, transitions[i, j], arc)
+        cost[i, j] = pair_cost(entries[i].analysis, entries[j].analysis, transitions[i, j], arc, max_shift)
     if n <= 2:
         order = min(itertools.permutations(range(n)), key=lambda o: _path_cost(list(o), cost))
         return list(order), transitions
@@ -136,7 +158,7 @@ def order_tracks(entries: list[Entry], arc: str) -> tuple[list[int], dict[tuple[
 
 def build_plan(
     source: Path, keep_order: bool | None = None, arc: str | None = None, bpm: float | None = None,
-    stems: bool = False, log=print,
+    stems: bool = False, log=print, max_shift: int = MAX_SHIFT,
 ) -> MixPlan:
     name, tracks, options = load_playlist(source)
     keep_order = options.get("keep_order", False) if keep_order is None else keep_order
@@ -152,15 +174,55 @@ def build_plan(
         transitions = {(i, i + 1): best_transition(entries[i].analysis, entries[i + 1].analysis)
                        for i in range(len(entries) - 1)}
     else:
-        order, transitions = order_tracks(entries, arc)
+        order, _ = order_tracks(entries, arc, max_shift)
+    shifted = assign_shifts([entries[i] for i in order], max_shift)
     plan_transitions = []
     min_out = 0
-    for i, j in zip(order, order[1:]):
-        c = transitions[i, j]
-        if c.out_bar < min_out:  # would collide with this track's incoming blend
-            c = best_transition(entries[i].analysis, entries[j].analysis, min_out_bar=min_out)
-        min_out = min_out_after(c, entries[j].analysis)
+    history: list[str] = []
+    for (ea, a), (eb, b) in zip(shifted, shifted[1:]):
+        c = _varied_transition(a, b, min_out, history)  # re-planned on the shifted keys
+        history.append(c.kind)
+        min_out = min_out_after(c, b)
         t = c.transition()
         t.notes = [f"score {c.score:+.2f}"] + c.reasons
         plan_transitions.append(t)
-    return MixPlan(name=name, bpm=bpm, tracks=[entries[i].track for i in order], transitions=plan_transitions)
+    return MixPlan(name=name, bpm=bpm, tracks=[e.track for e, _ in shifted], transitions=plan_transitions)
+
+
+VARIETY_PENALTY = (0.5, 0.25)  # same transition type as the previous one / the one before that
+USAGE_PENALTY = 0.15  # per earlier use of the same type anywhere in the set
+
+
+def _varied_transition(a: Analysis, b: Analysis, min_out: int, history: list[str]) -> Candidate:
+    """Best transition for this pair, with a penalty for repeating the last couple of types."""
+    ranked = candidates(a, b, min_out_bar=min_out)
+    if not ranked:
+        return best_transition(a, b, min_out_bar=min_out)
+
+    def penalty(kind: str) -> float:
+        recent = sum(p for p, prev in zip(VARIETY_PENALTY, reversed(history)) if prev == kind)
+        return recent + USAGE_PENALTY * history.count(kind)
+
+    c = max(ranked, key=lambda x: x.score - penalty(x.kind))
+    if penalty(c.kind):
+        c = Candidate(c.out_bar, c.in_bar, c.overlap, c.swap_bar, c.kind, round(c.score - penalty(c.kind), 3),
+                      c.reasons + [f"{-penalty(c.kind):+.2f} same type as a recent transition"])
+    return c
+
+
+def assign_shifts(ordered: list[Entry], max_shift: int = MAX_SHIFT) -> list[tuple[Entry, Analysis]]:
+    """Give each track a pitch shift (semitones) matching the previous track's *shifted* key.
+
+    Returns (entry with track.semitones set, analysis with the shifted key) in order.
+    """
+    out = []
+    prev: Analysis | None = None
+    for e in ordered:
+        a, s = e.analysis, 0
+        if prev is not None and max_shift and _trusted(prev, a):
+            s, _ = best_shift(prev.key, a.key, max_shift)
+        if s:
+            a = a.model_copy(update={"key": shift_key(a.key, s)})
+        out.append((Entry(e.track.model_copy(update={"semitones": s}), e.analysis), a))
+        prev = a
+    return out

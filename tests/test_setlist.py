@@ -54,3 +54,44 @@ def test_unreadable_files_are_skipped(tmp_path):
     entries = analyze_entries([PlanTrack(path=str(tmp_path / "broken.mp3"))], log=logged.append)
     assert entries == []
     assert any("skipped" in m for m in logged)
+
+
+def test_best_shift_fixes_clashes_cheaply():
+    from autodj.setlist import best_shift
+
+    assert best_shift("8A", "8A") == (0, 0.0)
+    assert best_shift("8A", "9A")[0] == 0  # already mixable: don't touch it
+    s, cost = best_shift("6B", "11B")  # 5 steps apart: one semitone up turns 11B into 6B
+    assert s == 1 and cost == pytest.approx(0.2)
+    s, cost = best_shift("8A", "10A")  # 2 steps: two semitones
+    assert s == -2 and cost == pytest.approx(0.5)
+    assert best_shift("8A", "3A", max_shift=0)[0] == 0
+
+
+def test_shifts_chain_from_the_previous_shifted_key(club_track):
+    from autodj.camelot import shift_key
+    from autodj.setlist import assign_shifts
+
+    entries = [Entry(PlanTrack(path=f"/{k}.mp3"), club_track(key=k, path=f"/{k}.mp3")) for k in ("8A", "1A", "1A")]
+    shifted = assign_shifts(entries)
+    semis = [e.track.semitones for e, _ in shifted]
+    assert semis == [0, 1, 1]  # 1A +1 semitone = 8A; the third then matches the shifted second
+    assert [a.key for _, a in shifted] == ["8A", "8A", "8A"]
+    assert shift_key("1A", 1) == "8A"
+
+
+def test_uncertain_keys_are_not_shifted(club_track):
+    from autodj.setlist import assign_shifts
+
+    entries = [Entry(PlanTrack(path="/a.mp3"), club_track(key="8A")),
+               Entry(PlanTrack(path="/b.mp3"), club_track(key="1A", key_confidence=0.0))]
+    assert [e.track.semitones for e, _ in assign_shifts(entries)] == [0, 0]
+
+
+def test_set_varies_transition_types(club_track):
+    from autodj.setlist import _varied_transition
+
+    a, b = club_track(key="8A"), club_track(key="8A")
+    first = _varied_transition(a, b, 0, [])
+    second = _varied_transition(a, b, 0, [first.kind, first.kind])
+    assert second.kind != first.kind

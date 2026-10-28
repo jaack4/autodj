@@ -30,7 +30,8 @@ class Analysis(BaseModel):
 
     key: str  # Camelot, e.g. "8A"
     key_name: str
-    key_confidence: float  # margin between best and runner-up key, ~0..0.3
+    key_confidence: float  # how far the best key beats keys 2+ Camelot steps away (~0..0.4)
+    key_source: str = "mix"  # "stems" once re-detected from the harmonic stems
     lufs: float
 
     bar_energy: list[float]
@@ -73,6 +74,7 @@ class PlanTrack(BaseModel):
     bpm: float | None = None  # tempo the track settles at when playing solo (default: native)
     bpm_hint: float | None = None  # passed to analysis to resolve half/double time
     key: str | None = None  # user-provided key (Camelot), overrides detection when planning
+    semitones: int = 0  # pitch shift for the whole track, to match keys with its neighbours
     title: str | None = None
     artist: str | None = None
 

@@ -7,6 +7,7 @@ import json
 import subprocess
 from pathlib import Path
 
+from autodj.camelot import shift_key
 from autodj.models import MixPlan
 from autodj.render import Deck, TransitionWindow
 
@@ -29,8 +30,11 @@ def _data(plan: MixPlan, decks: list[Deck], windows: list[TransitionWindow], che
             if b > a:
                 sections.append({"label": s.label, "start": a, "end": b})
         name = " - ".join(x for x in (t.artist, t.title) if x) or Path(d.analysis.path).stem
+        key = shift_key(t.key or d.analysis.key, t.semitones)
+        if t.semitones:
+            key += f" ({t.semitones:+d} st)"
         tracks.append({"name": name, "start": start, "end": end, "bpm": round(d.native_bpm, 1),
-                       "key": t.key or d.analysis.key, "sections": sections})
+                       "key": key, "sections": sections})
     transitions = []
     for k, (w, check) in enumerate(zip(windows, checks)):  # window k runs from deck k into deck k + 1
         tr = w.transition

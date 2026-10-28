@@ -46,6 +46,7 @@ class Deck:
     analysis: Analysis
     target_bpm: float  # tempo when playing solo
     gain: float  # loudness match to the plan's target LUFS
+    semitones: int = 0  # pitch shift for key matching
     curve: TempoCurve = field(default_factory=list)  # empty: constant target tempo
     offset: float = 0.0  # mix time of the deck's output t=0
     play_from: float = 0.0  # output seconds
@@ -102,7 +103,8 @@ class Deck:
         # stretch, which flams every kick. R2 holds beats within 0.2 ms at a constant factor and
         # ~4 ms through a ramp (see tests/test_render.py).
         return pedalboard.time_stretch(
-            audio, sr, stretch_factor=float(factor[0]) if constant else factor.astype(np.float64), high_quality=False
+            audio, sr, stretch_factor=float(factor[0]) if constant else factor.astype(np.float64), high_quality=False,
+            pitch_shift_in_semitones=float(self.semitones),
         )
 
 
@@ -239,7 +241,7 @@ def _split_bands(x: np.ndarray, sr: int) -> dict[str, np.ndarray]:
 def make_deck(track: PlanTrack, plan: MixPlan) -> Deck:
     a = analyze_file(Path(track.path), bpm_hint=track.bpm_hint)
     target = plan.bpm or track.bpm or a.bpm
-    return Deck(analysis=a, target_bpm=target, gain=10 ** ((plan.target_lufs - a.lufs) / 20))
+    return Deck(analysis=a, target_bpm=target, gain=10 ** ((plan.target_lufs - a.lufs) / 20), semitones=track.semitones)
 
 
 def _check_transition(tr: Transition, a: Deck, b: Deck) -> None:

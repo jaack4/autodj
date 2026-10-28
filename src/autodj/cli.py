@@ -120,6 +120,7 @@ def build_set(
     arc: Annotated[str | None, typer.Option(help="warmup_peak (tempo rises) | flat")] = None,
     bpm: Annotated[float | None, typer.Option(help="Lock every track to this tempo")] = None,
     stems: Annotated[bool, typer.Option(help="Separate stems: avoids vocal clashes, enables acapella_overlay")] = False,
+    max_shift: Annotated[int, typer.Option(help="Max pitch shift (semitones) to match keys; 0 turns it off")] = 2,
     director: Annotated[bool, typer.Option(help="Also ask Claude to pick transitions and narrate (needs ANTHROPIC_API_KEY)")] = False,
     output: Annotated[Path | None, typer.Option("-o", help="Plan file to write")] = None,
 ) -> None:
@@ -131,18 +132,21 @@ def build_set(
     def log(msg: str) -> None:
         typer.secho(msg, err=True, fg="yellow" if msg.lstrip().startswith(("warning", "skipped")) else None)
 
-    plan = build_plan(source, keep_order=keep_order, arc=arc, bpm=bpm, stems=stems, log=log)
+    plan = build_plan(source, keep_order=keep_order, arc=arc, bpm=bpm, stems=stems, log=log, max_shift=max_shift)
     typer.echo("")
+    from autodj.camelot import shift_key
+
     analyses = [analyze_file(Path(t.path), bpm_hint=t.bpm_hint) for t in plan.tracks]
+    keys = [shift_key(t.key or a.key, t.semitones) for t, a in zip(plan.tracks, analyses)]
     for k, (t, a) in enumerate(zip(plan.tracks, analyses)):
-        key = t.key or a.key
-        typer.echo(f"{k + 1:3d}. {Path(t.path).stem}  [{a.bpm:.1f} BPM, {key}]")
+        key = keys[k]
+        shifted = f" (shifted {t.semitones:+d} semitones from {t.key or a.key})" if t.semitones else ""
+        typer.echo(f"{k + 1:3d}. {Path(t.path).stem}  [{a.bpm:.1f} BPM, {key}{shifted}]")
         if k < len(plan.transitions):
             tr = plan.transitions[k]
             how = f"{tr.overlap_bars}-bar {tr.type}" if tr.overlap_bars else tr.type
             typer.echo(f"       -> {how}: bar {tr.out_bar} into bar {tr.in_bar} ({tr.notes[0] if tr.notes else ''})")
-            _warn_pair(a.model_copy(update={"key": key}),
-                       analyses[k + 1].model_copy(update={"key": plan.tracks[k + 1].key or analyses[k + 1].key}),
+            _warn_pair(a.model_copy(update={"key": key}), analyses[k + 1].model_copy(update={"key": keys[k + 1]}),
                        tr.type)
     plan_path = output or OUTPUT_DIR / "sets" / f"{plan.name}.json"
     _write_plan(plan, plan_path)
@@ -156,10 +160,15 @@ def _run_director(plan, plan_path: Path, model: str) -> Path | None:
     from autodj.director import DirectorError
     from autodj.director import direct as direct_plan
 
+    from autodj.camelot import shift_key
+
     analyses = []
-    for t in plan.tracks:
+    for t in plan.tracks:  # keys as they'll be heard: user-given or detected, after any pitch shift
         a = analyze_file(Path(t.path), bpm_hint=t.bpm_hint)
-        analyses.append(a.model_copy(update={"key": t.key, "key_confidence": 1.0}) if t.key else a)
+        update = {"key": shift_key(t.key or a.key, t.semitones)}
+        if t.key:
+            update["key_confidence"] = 1.0
+        analyses.append(a.model_copy(update=update))
     typer.echo(f"asking the creative director ({model})...", err=True)
     try:
         directed, repairs = direct_plan(plan, analyses, model=model)
@@ -348,3 +357,41 @@ def eval_sections(
                f"(your label -> detected, in bars):")
     for (t, p), n in sorted(((k, v) for k, v in total.confusion.items() if k[0] != k[1]), key=lambda kv: -kv[1])[:6]:
         typer.echo(f"  {t:>6s} -> {p:<6s} {n}")
+
+
+@app.command(name="eval-keys")
+def eval_keys(
+    sources: Annotated[list[Path], typer.Argument(exists=True, help="Folders or files with the referenced tracks")],
+    refs: Annotated[Path, typer.Option(help="Reference keys: {track file stem: {key, alt}}")] = Path("labels/keys.json"),
+) -> None:
+    """Compare key-detection methods against reference keys."""
+    import json
+
+    from autodj.analysis import analyze_file
+    from autodj.analysis.key import essentia_available
+    from autodj.key_eval import METHODS, detect, summarize
+
+    reference = {k: v for k, v in json.loads(refs.read_text()).items() if not k.startswith("_")}
+    methods = [m for m in METHODS if essentia_available() or not m.startswith("essentia")]
+    rows = []
+    typer.echo(f"{'track':34s} {'ref':>4s}  " + "  ".join(f"{m:>15s}" for m in methods))
+    for f in _audio_files(sources):
+        if f.stem not in reference:
+            continue
+        a = analyze_file(f)
+        row = {"name": f.stem, **reference[f.stem]}
+        cells = []
+        for m in methods:
+            code, conf = detect(a, m)
+            row[m] = (code, conf)
+            mark = "=" if code == row["key"] else "~" if code in row["alt"] else " "
+            cells.append(f"{code:>4s}{mark} ({conf:.2f})".rjust(15))
+        rows.append(row)
+        typer.echo(f"{f.stem[:34]:34s} {row['key']:>4s}  " + "  ".join(cells))
+    if not rows:
+        raise typer.BadParameter("none of the tracks have reference keys")
+    typer.echo(f"\n{'method':15s} {'exact':>6s} {'any source':>11s} {'mixable (<=1 step)':>19s} {'MIREX':>6s}")
+    for m in methods:
+        s = summarize(rows, m)
+        typer.echo(f"{m:15s} {s['exact']:6.0%} {s['any_source']:11.0%} {s['compatible']:19.0%} {s['mirex']:6.2f}")
+    typer.echo("\n= matches the reference, ~ matches a minority source; (confidence)")
