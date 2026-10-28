@@ -20,7 +20,7 @@ UNCERTAIN_KEY = 0.03  # key confidence below this: don't trust the key to rule a
 BLENDS = ("bass_swap_blend", "filter_sweep", "stem_blend", "melody_first", "reverb_wash")
 NEEDS_STEMS = ("stem_blend", "melody_first", "double_drop", "acapella_overlay")
 STYLES = {  # transition types each style may use
-    "smooth": BLENDS + ("double_drop",),  # real mixing: overlaps, nothing abrupt
+    "smooth": BLENDS,  # pure mixing: overlaps, nothing abrupt
     "mixed": None,  # everything, including cuts, echo outs and acapella overlays
 }
 FULL_PLAY = 0.85  # playing this share of a track counts as playing all of it (outros fade anyway)
@@ -118,6 +118,56 @@ def _share(values: list[float] | None, start: int, end: int, on: float = VOCAL_O
     return float(np.mean(np.array(values[start:end]) > on))
 
 
+def character(x: Analysis, start: int, end: int) -> dict | None:
+    """Median loudness (dB vs the track's LUFS), grit and drums level over bars [start, end)."""
+    lo, hi = max(0, start), min(x.n_bars, end)
+    if not x.bar_loudness or hi <= lo:
+        return None
+    c = {"loud": float(np.median(x.bar_loudness[lo:hi])), "grit": float(np.median(x.bar_grit[lo:hi]))}
+    if x.bar_drums:
+        c["drums"] = float(np.median(x.bar_drums[lo:hi]))
+    return c
+
+
+def character_jump(ca: dict | None, cb: dict | None) -> float:
+    """How much harsher/punchier B is than A (negative: calmer). ~1 is clearly noticeable."""
+    if ca is None or cb is None:
+        return 0.0
+    jump = (cb["grit"] - ca["grit"]) / 0.1 + (cb["loud"] - ca["loud"]) / 6
+    if "drums" in ca and "drums" in cb:
+        jump += (cb["drums"] - ca["drums"]) / 15
+    return jump
+
+
+def drop_bars(x: Analysis) -> list[tuple[int, int]]:
+    return [(s.start_bar, s.end_bar) for s in x.sections if s.label == "drop"]
+
+
+def drop_character(x: Analysis) -> dict | None:
+    """Character of the track's drops together (its 'vibe' at full power); whole track if it has none."""
+    bars = [k for a, b in drop_bars(x) for k in range(a, b)] or list(range(x.n_bars))
+    if not x.bar_loudness:
+        return None
+    c = {"loud": float(np.median([x.bar_loudness[k] for k in bars])),
+         "grit": float(np.median([x.bar_grit[k] for k in bars]))}
+    if x.bar_drums:
+        c["drums"] = float(np.median([x.bar_drums[k] for k in bars]))
+    return c
+
+
+def biggest_drop(x: Analysis) -> tuple[int, int] | None:
+    """The drop with the most power; short bursts (< 8 bars) only count if there's nothing longer."""
+    drops = drop_bars(x)
+    drops = [d for d in drops if d[1] - d[0] >= 8] or drops
+    best, best_power = None, -np.inf
+    for a, b in drops:
+        c = character(x, a, b)
+        power = (c["loud"] + 10 * c["grit"]) if c else float(np.mean(x.bar_energy[a:b]))
+        if power > best_power:
+            best, best_power = (a, b), power
+    return best
+
+
 def _mean_energy(x: Analysis, start: int, end: int) -> float:
     start, end = max(0, start), min(x.n_bars, end)
     return float(np.mean(x.bar_energy[start:end])) if end > start else 0.0
@@ -163,10 +213,42 @@ def score(a: Analysis, b: Analysis, c: Candidate, preferred_overlap: int, style:
     if c.overlap and ea < 0.25:
         add(-0.5, "A has already faded out")
 
+    # Character match (comparable across tracks): what B brings in vs what A is doing there.
+    if c.kind not in ("drop_cut", "beat_roll", "double_drop"):
+        if c.overlap:
+            ca, cb = character(a, c.out_bar, a_end), character(b, c.in_bar, b_end)
+        else:
+            ca, cb = character(a, c.out_bar - 4, c.out_bar), character(b, c.in_bar, c.in_bar + 4)
+        jump = character_jump(ca, cb)
+        if jump > 1.0:
+            add(-0.5 * min(jump - 1.0, 4.0), f"B is harsher/punchier than A's section here ({jump:+.1f})")
+        elif jump < -1.5:
+            add(-0.3 * min(-jump - 1.5, 4.0), f"B is much softer than A's section here ({jump:+.1f})")
+
+    # Respect A's arc: don't leave in the middle of a build, don't cut into its biggest drop.
+    if c.kind not in ("drop_cut", "beat_roll", "double_drop"):
+        if any(a.section_at(k).label == "build" for k in range(max(0, a_end - 4), a_end)):
+            add(-0.8, "A leaves mid-build (its tension never pays off)")
+        elif any(s.label == "drop" and a_end - 2 <= s.start_bar <= a_end + 4 for s in a.sections):
+            add(-0.8, "A leaves just as its own drop arrives (the build-up never pays off)")
+    peak = biggest_drop(a)
+    if peak and c.out_bar < peak[1] - 4 and a_end > peak[0] and c.kind != "drop_cut":
+        add(-1.0, "interrupts A's biggest drop")  # blending out of its last 4 bars is fine
+
+    # Letdown: the drop B arrives at shouldn't be a big step down from A's drops.
+    landing = next((s for s in b.sections if s.label == "drop" and s.start_bar >= b_end - 1), None)
+    if landing and drop_bars(a):
+        let = character_jump(drop_character(a), character(b, landing.start_bar, landing.end_bar))
+        if let < -1.0:
+            add(-0.4 * min(-let - 1.0, 4.0), f"B's drop is a step down from A's drops ({let:+.1f})")
+
     if c.kind in BLENDS:
-        a_labels = [a.section_at(k).label for k in range(c.out_bar, a_end)]
+        # A's drop bars under the blend, not counting each drop's last 4 (mixing out of a drop that
+        # has played out is normal).
+        a_dropping = sum(1 for k in range(c.out_bar, a_end)
+                         if a.section_at(k).label == "drop" and k < a.section_at(k).end_bar - 4)
         b_labels = [b.section_at(k).label for k in range(c.in_bar, b_end)]
-        add(-1.0 * a_labels.count("drop") / c.overlap, "A is dropping during the blend")
+        add(-1.0 * a_dropping / c.overlap, "A is dropping during the blend")
         add(-1.0 * b_labels.count("drop") / c.overlap, "B's drop is buried under the blend")
         ea = np.array(a.bar_energy[c.out_bar : a_end])
         eb = np.array(b.bar_energy[c.in_bar : b_end])
@@ -279,8 +361,8 @@ def _blend_candidates(a: Analysis, b: Analysis, min_out_bar: int, style: str = "
             if kind in NEEDS_STEMS and (a.bar_vocals is None or b.bar_vocals is None
                                         or key_distance(a, b) > 1 or overlap < 8):
                 continue  # needs stems, and A's parts must sit in key over B's
-            if kind == "reverb_wash" and overlap > 16:
-                continue
+            if kind == "reverb_wash" and overlap > 8:
+                continue  # a wash is an accent, not a long transition
             for o in outs:
                 for i in ins:
                     swap = _swap_bar(b, i, overlap)
@@ -358,9 +440,13 @@ def candidates(a: Analysis, b: Analysis, min_out_bar: int = 0, kinds: tuple[str,
 
     style 'smooth' only offers real blends (kinds, if given, narrows it further).
     """
-    found = _blend_candidates(a, b, min_out_bar, style) + _double_drop_candidates(a, b, min_out_bar)
+    found = _blend_candidates(a, b, min_out_bar, style)
     if style != "smooth":
-        found += _cut_candidates(a, b, min_out_bar) + _overlay_candidates(a, b, min_out_bar)
+        found += (_double_drop_candidates(a, b, min_out_bar) + _cut_candidates(a, b, min_out_bar)
+                  + _overlay_candidates(a, b, min_out_bar))
+    allowed = STYLES.get(style)
+    if allowed:
+        found = [c for c in found if c.kind in allowed]
     if kinds:
         found = [c for c in found if c.kind in kinds]
     return sorted(found, key=lambda c: c.score, reverse=True)

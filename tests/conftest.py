@@ -12,14 +12,19 @@ def make_analysis(
     offsets_ms: list[float] | None = None,
     key_confidence: float = 0.2,
     vocals: list[float] | None = None,
+    character: list[tuple[float, float, float]] | None = None,
 ) -> Analysis:
-    """A fake analysis: sections as (label, start_bar, end_bar, energy)."""
+    """A fake analysis: sections as (label, start_bar, end_bar, energy); optional per-section
+    character as (loudness dB, grit, drums dB)."""
     n = sections[-1][2]
     bar = 4 * 60 / bpm
     downbeats = (0.5 + bar * np.arange(n)).tolist()
     energy = np.zeros(n)
-    for _, s, e, en in sections:
+    loud, grit, drums = np.zeros(n), np.zeros(n), np.zeros(n)
+    for k, (_, s, e, en) in enumerate(sections):
         energy[s:e] = en
+        if character:
+            loud[s:e], grit[s:e], drums[s:e] = character[k]
     return Analysis(
         version=0, path=path, sha256="0" * 64, duration=0.5 + bar * n, beat_backend="test",
         bpm=bpm, beats=(0.5 + bar / 4 * np.arange(4 * n)).tolist(), downbeats=downbeats,
@@ -27,6 +32,8 @@ def make_analysis(
         key=key, key_name="", key_confidence=key_confidence, lufs=-8.0,
         bar_energy=energy.tolist(), bar_novelty=[0.0] * n,
         bar_offset_ms=offsets_ms or [0.0] * n, bar_offset_confidence=[3.0] * n, bar_vocals=vocals,
+        bar_loudness=loud.tolist() if character else [], bar_grit=grit.tolist() if character else [],
+        bar_drums=drums.tolist() if character else None,
         sections=[Section(label=l, start_bar=s, end_bar=e, start=downbeats[s], end=downbeats[e - 1] + bar, energy=en)
                   for l, s, e, en in sections],
     )

@@ -176,7 +176,8 @@ def _cut(out: Deck, inc: Deck, t: float) -> None:
 INSTRUMENTAL = ("drums", "bass", "other")
 STEM_TRANSITIONS = ("acapella_overlay", "stem_blend", "melody_first", "double_drop")  # need separated stems
 CUT_TYPES = ("echo_out", "drop_cut", "beat_roll", "tape_stop")
-WASH_TAIL_BARS = 2
+WASH_TAIL_BARS = 1
+WASH_MAX_WET = 0.45
 ROLL_PATTERN = (1, 1, 0.5, 0.5, 0.25, 0.25, 0.125, 0.125, 0.125, 0.125)  # beats; sums to one bar
 OVERLAY_BLEND_IN_BARS = 4  # B's beat fades in over the overlay's last bars
 OVERLAY_BLEND_OUT_BARS = 2  # A's beat fades out after the bass swap
@@ -242,7 +243,7 @@ def _wash_tail(seg: np.ndarray, times: np.ndarray, w: Wash, sr: int) -> tuple[in
     ])
     wet = reverb(padded.astype(np.float32), sr)
     t = w.start + np.arange(wet.shape[1]) / sr
-    return i0, wet * np.interp(t, [w.start, w.peak], [0.0, 0.8])
+    return i0, wet * np.interp(t, [w.start, w.peak], [0.0, WASH_MAX_WET])
 
 
 def _beat_roll(out: np.ndarray, times: np.ndarray, cut: float, beat: float, sr: int) -> None:
@@ -320,7 +321,7 @@ def apply_transition(w: "TransitionWindow") -> None:
     elif tr.type == "reverb_wash":
         _bass_swap_blend(a, b, w.start, w.end, w.swap)
         a.filters.append(("highpass", _sweep(w.swap, w.end, 20.0, 800.0)))
-        a.wash = Wash(w.start, w.swap, w.end, WASH_TAIL_BARS * 4 * w.beat)
+        a.wash = Wash(w.swap, w.end, w.end, WASH_TAIL_BARS * 4 * w.beat)  # only over the second half
     elif tr.type == "double_drop":
         _double_drop(a, b, w.start, w.end)
     elif tr.type == "beat_roll":

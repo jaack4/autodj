@@ -40,6 +40,10 @@ class Analysis(BaseModel):
     bar_offset_confidence: list[float]  # < 1.5: too few kicks to measure
     sections: list[Section]
     bar_vocals: list[float] | None = None  # 0..1 vocal presence per bar, once stems are separated
+    # Character on scales comparable across tracks (see analysis/character.py):
+    bar_loudness: list[float] = []  # dB relative to the track's integrated LUFS
+    bar_grit: list[float] = []  # 2-10 kHz spectral flatness: ~0.05 smooth/tonal .. ~0.4 distorted/noisy
+    bar_drums: list[float] | None = None  # drums stem level, dB relative to LUFS (with stems)
     sections_source: str = "mix"  # "stems" once sections are re-detected from separated stems
     sections_mix: list[Section] | None = None  # the mix-only sections, kept for comparison
     _memo: dict = PrivateAttr(default_factory=dict)  # derived values cached by the planner

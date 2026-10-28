@@ -126,3 +126,68 @@ def test_stem_blend_needs_stems_and_rewards_carried_vocals(club_track):
     assert best.kind == "stem_blend"
     assert any("carry across" in r for r in best.reasons)
     assert not candidates(a, club_track(key="3B", vocals=v_outro), kinds=("stem_blend",))  # clashing keys
+
+
+SOFT, MID, HARSH = (-8.0, 0.06, -35.0), (-5.0, 0.2, -10.0), (-3.0, 0.4, -6.0)
+
+
+def test_harsh_entry_over_a_soft_section_is_avoided():
+    # A: a soft vocal outro after a medium body; B: harsh from the start.
+    a = make_analysis([("intro", 0, 16, 0.4), ("drop", 16, 48, 0.9), ("body", 48, 80, 0.6), ("outro", 80, 112, 0.4)],
+                      character=[SOFT, MID, MID, SOFT])
+    b = make_analysis([("intro", 0, 16, 0.5), ("drop", 16, 48, 0.9), ("outro", 48, 64, 0.4)],
+                      character=[MID, MID, SOFT])
+    c = best_transition(a, b, style="smooth")
+    assert c.out_bar + c.overlap <= 80  # blends out of A's medium body, not its soft outro
+    harsh_b = b.model_copy(update={"bar_grit": [0.4] * 64, "bar_drums": [-6.0] * 64})
+    soft_out = [x for x in candidates(a, harsh_b, style="smooth") if x.out_bar >= 80]
+    assert soft_out and all(any("harsher" in r for r in x.reasons) for x in soft_out)
+
+
+def test_leaving_mid_build_and_cutting_the_biggest_drop_are_penalized():
+    a = make_analysis([("intro", 0, 16, 0.4), ("drop", 16, 32, 0.8), ("build", 32, 48, 0.6),
+                       ("drop", 48, 80, 0.95), ("outro", 80, 96, 0.4)],
+                      character=[MID, MID, MID, HARSH, MID])
+    b = make_analysis([("intro", 0, 16, 0.4), ("drop", 16, 48, 0.9), ("outro", 48, 64, 0.4)],
+                      character=[MID, MID, MID])
+    reasons = {(x.out_bar, x.overlap): x.reasons for x in candidates(a, b, style="smooth")}
+    assert any("mid-build" in r for r in reasons[(36, 8)])  # ends inside the build (bars 32-48)
+    assert any("biggest drop" in r for r in reasons[(56, 16)])  # overlaps the bar 48-80 drop
+
+
+def test_letdown_after_a_harsh_track_is_penalized():
+    a = make_analysis([("intro", 0, 16, 0.4), ("drop", 16, 48, 0.95), ("outro", 48, 64, 0.4)],
+                      character=[MID, HARSH, MID])
+    calm = make_analysis([("intro", 0, 16, 0.4), ("drop", 16, 48, 0.9), ("outro", 48, 64, 0.4)],
+                         character=[MID, SOFT, SOFT])
+    c = best_transition(a, calm, style="smooth")
+    assert any("step down" in r for r in c.reasons)
+
+
+def test_ordering_keeps_similar_vibes_together():
+    from autodj.models import PlanTrack
+    from autodj.setlist import Entry, order_tracks
+
+    def track(name, drop):
+        return make_analysis([("intro", 0, 16, 0.4), ("drop", 16, 48, 0.9), ("outro", 48, 64, 0.4)],
+                             key="8A", path=f"/{name}.mp3", character=[MID, drop, MID])
+    tracks = [track("soft1", SOFT), track("harsh1", HARSH), track("soft2", SOFT), track("harsh2", HARSH)]
+    entries = [Entry(PlanTrack(path=t.path), t) for t in tracks]
+    order, _ = order_tracks(entries, arc="flat")
+    names = [tracks[i].path.strip("/.mp3") for i in order]
+    # the two soft tracks sit together, and so do the two harsh ones
+    assert abs(names.index("soft1") - names.index("soft2")) == 1
+    assert abs(names.index("harsh1") - names.index("harsh2")) == 1
+
+
+def test_smooth_style_never_offers_double_drops(club_track):
+    v = _vocals(112, [])
+    found = candidates(club_track(vocals=v), club_track(vocals=v), style="smooth")
+    assert found and "double_drop" not in {c.kind for c in found}
+    assert "double_drop" in {c.kind for c in candidates(club_track(vocals=v), club_track(vocals=v), style="mixed")}
+
+
+def test_leaving_right_before_a_drop_is_penalized(club_track):
+    a = club_track()  # drops at 16 and 64
+    reasons = {(x.out_bar, x.overlap): x.reasons for x in candidates(a, club_track(), style="smooth")}
+    assert any("own drop arrives" in r for r in reasons[(48, 16)])  # blend ends at 64 = A's drop

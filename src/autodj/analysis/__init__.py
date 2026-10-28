@@ -9,13 +9,14 @@ import numpy as np
 import pyloudnorm
 
 from autodj.analysis.beats import ALIGN_WINDOW, BackendUnavailable, beat_this_checkpoint_cached, detect_grid
+from autodj.analysis.character import bar_character
 from autodj.analysis.key import estimate_key
 from autodj.audio import load as load_audio
 from autodj.analysis.structure import bar_features, novelty, segment
 from autodj.camelot import key_name, to_camelot
 from autodj.models import Analysis
 
-ANALYSIS_VERSION = 7
+ANALYSIS_VERSION = 8
 ANALYSIS_SR = 22050
 CACHE_DIR = Path(".cache/analysis")
 BACKENDS = ("beat_this", "heuristic")  # downbeat methods
@@ -47,6 +48,7 @@ def _analyze(path: Path, sha: str, backend: str, bpm_hint: float | None) -> Anal
     nov = novelty(feats)
     sections = segment(energy, nov, bar_starts, bar_len)
     pc, minor, key_conf = estimate_key(y, sr)
+    loudness, grit = bar_character(y, sr, bar_starts.tolist(), float(lufs))
 
     # Local grid alignment per bar, from the window containing the bar's first beat.
     window = np.minimum((grid.phase + 4 * np.arange(len(bar_starts))) // ALIGN_WINDOW, len(grid.window_offsets_ms) - 1)
@@ -72,6 +74,8 @@ def _analyze(path: Path, sha: str, backend: str, bpm_hint: float | None) -> Anal
         bar_offset_ms=np.round(grid.window_offsets_ms[window], 1).tolist(),
         bar_offset_confidence=np.round(grid.window_confidence[window], 2).tolist(),
         sections=sections,
+        bar_loudness=loudness,
+        bar_grit=grit,
     )
 
 
@@ -91,6 +95,10 @@ def analyze_file(
         a = a.model_copy(update={"sections": sections_from_stems(a, features), "sections_mix": a.sections,
                                  "sections_source": "stems"})
         a = a.model_copy(update=_stem_key(paths))
+        from autodj.analysis.character import bar_drums_db
+
+        drums, _ = load_audio(paths["drums"], sr=ANALYSIS_SR, mono=True)
+        a = a.model_copy(update={"bar_drums": bar_drums_db(drums, ANALYSIS_SR, a.downbeats, a.lufs)})
         _cache_path(a.sha256, a.beat_backend, bpm_hint).write_text(a.model_dump_json(indent=1))
     return a
 

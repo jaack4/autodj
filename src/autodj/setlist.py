@@ -11,7 +11,8 @@ from autodj.analysis import analyze_file
 from autodj.camelot import camelot_distance, parse_key, shift_key
 from autodj.mashups import find_mashups
 from autodj.models import Analysis, MixPlan, PlanTrack
-from autodj.planner import UNCERTAIN_KEY, Candidate, best_transition, candidates, min_out_after, tempo_gap
+from autodj.planner import (UNCERTAIN_KEY, Candidate, best_transition, candidates, character_jump, drop_character,
+                            min_out_after, tempo_gap)
 
 AUDIO_EXTENSIONS = {".mp3", ".wav", ".flac", ".aiff", ".aif", ".m4a", ".ogg"}
 MIN_TRACK_BARS = 16  # shorter files (jingles, snippets) are skipped
@@ -95,7 +96,12 @@ def pair_cost(a: Analysis, b: Analysis, transition: Candidate, arc: str, max_shi
         k_cost = 0.3 * key_cost(a.key, b.key)
     tempo_cost = (tempo_gap(a.bpm, b.bpm) / 0.04) ** 2  # 2% -> 0.25, 4% -> 1, 8% -> 4
     arc_cost = 0.5 if arc == "warmup_peak" and b.bpm < a.bpm - 1 else 0.0
-    return k_cost + tempo_cost + arc_cost - 0.5 * transition.score
+    # Vibe: neighbours should feel alike at full power (grit, loudness, drums of their drops).
+    vibe = character_jump(drop_character(a), drop_character(b))
+    vibe_cost = 0.4 * max(0.0, abs(vibe) - 0.5)
+    if arc == "warmup_peak" and vibe < -1.0:
+        vibe_cost += 0.3  # the energy falls back
+    return k_cost + tempo_cost + arc_cost + vibe_cost - 0.5 * transition.score
 
 
 def _held_karp(cost: np.ndarray) -> list[int]:

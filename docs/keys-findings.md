@@ -88,3 +88,28 @@ The smooth-style variety penalty went up to (0.35, 0.1, 0.05) so the new types a
 wash has a slightly negative base, so it needs a reason (vocals to wash out, or a key clash) to beat a
 plain blend. Demos in `output/demos/`. On `mysongs`: 4 stem blends, 3 melody-first, 1 double drop
 (Uncaged → Under Your Spell), plus the 2 mashups.
+
+## Round 4: listening feedback on the new types
+> 1. melody_first: gettin' hott's melody too aggressive for Ur Alive's soft outro.
+> 2. reverb_wash: too reverby for too long; big anticipation in Uncaged → calmer, bouncier drop in Under Your Spell.
+> 3. double_drop: interrupts Uncaged's biggest drop; not a good transition.
+> 4. beat_roll: could work if the vibes matched; Uncaged is too aggressive.
+> 5. tape_stop: just a cut; wants pure mixes.
+
+Root causes: no notion of *character* that compares across tracks (bar_energy is relative within a
+track), and no respect for a track's arc.
+
+- **New per-bar character, comparable across tracks:** loudness relative to the track's LUFS, grit
+  (2–10 kHz spectral flatness) and drums-stem level. Ur Alive's outro and gettin' hott's intro are equally
+  loud, but grit is 0.06 vs 0.29 and drums −36 dB vs −9 dB.
+- **Transitions:** penalty when B is harsher or punchier than A's section (and, more mildly, much
+  softer); a letdown penalty when B's landing drop is a step down from A's drops.
+- **Arc:** −0.8 for leaving mid-build or just as A's own drop arrives; −1.0 for interrupting A's biggest
+  drop (≥8-bar drops only; blending out of a drop's last 4 bars is fine).
+- **Ordering:** a vibe cost between neighbours (drop character), plus an extra cost when the warm-up's
+  energy falls back.
+- **Pure mixes:** double drop removed from the smooth style (bug fix: it was being offered regardless of
+  style). Reverb wash limited to ≤ 8 bars, wet ≤ 0.45 over the second half only, 1-bar tail.
+- **Open:** Uncaged → Under Your Spell stays the weakest pair (score ≈ 0). Uncaged has only 4 bars after its
+  last drop, so every option either leaves before that drop or blends from its tail into a louder intro.
+  Needs loop-extend (repeat A's last bars to make room) or a different order.
