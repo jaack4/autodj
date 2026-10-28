@@ -14,10 +14,10 @@ from autodj.analysis.structure import bar_features, novelty, segment
 from autodj.camelot import key_name, to_camelot
 from autodj.models import Analysis
 
-ANALYSIS_VERSION = 3
+ANALYSIS_VERSION = 5
 ANALYSIS_SR = 22050
 CACHE_DIR = Path(".cache/analysis")
-BACKENDS = ("beat_this", "librosa")
+BACKENDS = ("beat_this", "heuristic")  # downbeat methods
 
 
 def _sha256(path: Path) -> str:
@@ -55,8 +55,7 @@ def _analyze(path: Path, sha: str, backend: str, bpm_hint: float | None) -> Anal
         bpm=round(grid.bpm, 2),
         beats=np.round(grid.beats, 4).tolist(),
         downbeats=np.round(bar_starts, 4).tolist(),
-        kick_coverage=round(grid.kick_coverage, 3),
-        kick_offset_ms=round(grid.kick_offset_ms, 1),
+        onset_offset_ms=round(grid.onset_offset_ms, 1),
         grid_drift_ms=round(grid.drift_ms, 1),
         grid_ok=grid.ok,
         key=to_camelot(pc, minor),
@@ -72,14 +71,14 @@ def _analyze(path: Path, sha: str, backend: str, bpm_hint: float | None) -> Anal
 def analyze_file(
     path: Path, backend: str = "auto", bpm_hint: float | None = None, force: bool = False
 ) -> Analysis:
-    """Analyze a track. backend='auto' prefers beat_this (if its weights are downloaded), else librosa.
+    """Analyze a track. backend='auto' prefers beat_this downbeats (if its weights are downloaded), else heuristic.
 
     Pass backend='beat_this' explicitly to trigger the weights download.
     """
     path = path.expanduser().resolve()
     sha = _sha256(path)
     if backend == "auto":
-        order = BACKENDS if beat_this_checkpoint_cached() else ("librosa",)
+        order = BACKENDS if beat_this_checkpoint_cached() else ("heuristic",)
     else:
         order = (backend,)
     for i, b in enumerate(order):

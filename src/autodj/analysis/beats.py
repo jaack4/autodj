@@ -1,4 +1,10 @@
-"""Beat and downbeat detection, snapped to a constant-tempo grid."""
+"""Constant-tempo beat grid and downbeats.
+
+Tempo and beat phase come from a comb search over the whole track's kick-band onsets,
+which is more reliable for dance music than any beat tracker's local decisions (both
+librosa and beat_this got a 126 BPM track wrong by 2-3%). The tracker backend is only
+used to decide which beat starts the bar.
+"""
 
 from dataclasses import dataclass
 from functools import cache
@@ -7,8 +13,9 @@ from pathlib import Path
 import librosa
 import numpy as np
 
-BPM_RANGE = (75.0, 180.0)  # fold half/double-time detections into this range
-GRID_MAX_DRIFT_MS = 25.0  # kick-vs-grid drift between first and last third
+BPM_RANGE = (75.0, 180.0)
+DOUBLE_TIME_RATIO = 0.8  # prefer 2x tempo if its comb score is at least this close
+GRID_MAX_DRIFT_MS = 25.0  # onset-vs-grid drift between first and last third
 
 
 class BackendUnavailable(RuntimeError):
@@ -20,8 +27,7 @@ class BeatGrid:
     period: float  # seconds per beat
     beats: np.ndarray
     downbeats: np.ndarray
-    kick_coverage: float  # share of beats with a kick onset within 60 ms
-    kick_offset_ms: float  # median (onset - beat); constant offsets are harmless
+    onset_offset_ms: float  # median (onsets - grid); constant offsets are harmless
     drift_ms: float  # change in that offset from first to last third of the track
 
     @property
@@ -52,53 +58,54 @@ def _beat_this_model():
         raise BackendUnavailable(f"beat_this checkpoint could not be loaded: {e}") from e
 
 
-def detect_raw(y: np.ndarray, sr: int, backend: str) -> tuple[np.ndarray, np.ndarray | None]:
-    """Raw beat times, plus downbeat times if the backend predicts them."""
-    if backend == "beat_this":
-        beats, downbeats = _beat_this_model()(y, sr)
-        return np.asarray(beats), np.asarray(downbeats)
-    if backend == "librosa":
-        hop = 512
-        onset = librosa.onset.onset_strength(y=y, sr=sr, hop_length=hop, aggregate=np.median)
-        _, frames = librosa.beat.beat_track(
-            onset_envelope=onset, sr=sr, hop_length=hop, units="frames", tightness=400
-        )
-        return librosa.frames_to_time(frames, sr=sr, hop_length=hop), None
-    raise ValueError(f"Unknown beat backend: {backend}")
+def _onset_env(y: np.ndarray, sr: int, hop: int) -> np.ndarray:
+    env = librosa.onset.onset_strength(y=y, sr=sr, hop_length=hop, fmax=200, n_mels=32)
+    return env - env.mean()
 
 
-def fit_grid(raw_beats: np.ndarray, duration: float, bpm_hint: float | None = None) -> tuple[float, float, np.ndarray]:
-    """Least-squares constant-tempo fit. Returns (period, first_beat, residuals_s)."""
-    if len(raw_beats) < 8:
-        raise ValueError("Too few beats detected to fit a grid")
-    period = float(np.median(np.diff(raw_beats)))
-    if bpm_hint:
-        period = min((period * f for f in (0.5, 1.0, 2.0)), key=lambda p: abs(60 / p - bpm_hint))
-    else:
-        while 60 / period < BPM_RANGE[0]:
-            period /= 2
-        while 60 / period >= BPM_RANGE[1]:
-            period *= 2
+def _comb_scores(env: np.ndarray, fps: float, duration: float, bpms: np.ndarray, phase_step: float):
+    """For each tempo: best mean onset strength over grid phases, and that phase."""
+    scores, phases = np.empty(len(bpms)), np.empty(len(bpms))
+    for i, bpm in enumerate(bpms):
+        period = 60 / bpm
+        ph = np.arange(0, period, phase_step)
+        t = ph[:, None] + period * np.arange(int(duration / period) - 1)[None, :]
+        s = env[np.clip((t * fps).astype(int), 0, len(env) - 1)].mean(axis=1)
+        j = int(s.argmax())
+        scores[i], phases[i] = s[j], ph[j]
+    return scores, phases
 
-    # Fit on a short window first and widen it, so a slightly-off initial period
-    # can't make beat indices slip far from the start of the track.
-    offset = float(raw_beats[0])
-    span = 16 * period
-    while True:
-        window = raw_beats <= raw_beats[0] + span
-        for _ in range(2):
-            idx = np.round((raw_beats - offset) / period)
-            resid = raw_beats - (offset + idx * period)
-            keep = window & (np.abs(resid) < 0.25 * period)
-            period, offset = np.polyfit(idx[keep], raw_beats[keep], 1)
-        if window.all():
-            break
-        span *= 2
 
-    idx = np.round((raw_beats - offset) / period)
-    resid = raw_beats - (offset + idx * period)
-    first = offset % period
-    return float(period), float(first), resid[keep]
+def comb_grid(y: np.ndarray, sr: int, duration: float, bpm_hint: float | None = None) -> tuple[float, float]:
+    """Constant (period, first_beat) that best lines up with kick-band onsets over the whole track."""
+    hop = 64
+    fps = sr / hop
+    env = _onset_env(y, sr, hop)
+    lo, hi = (bpm_hint * 0.97, bpm_hint * 1.03) if bpm_hint else BPM_RANGE
+
+    # Coarse pass on a smoothed envelope (wider peaks), then refine around the winner.
+    smooth = np.convolve(env, np.hanning(9) / np.hanning(9).sum(), mode="same")
+    coarse = np.arange(lo, hi, 0.05)
+    scores, _ = _comb_scores(smooth, fps, duration, coarse, 0.008)
+    bpm = coarse[scores.argmax()]
+
+    def refine(center: float) -> tuple[float, float, float]:
+        fine = np.arange(center - 0.1, center + 0.1, 0.002)
+        sc, ph = _comb_scores(env, fps, duration, fine, 0.001)
+        k = int(sc.argmax())
+        return float(fine[k]), float(ph[k]), float(sc[k])
+
+    bpm, phase, score = refine(bpm)
+    if not bpm_hint and bpm * 2 < hi:
+        bpm2, phase2, score2 = refine(bpm * 2)
+        if score2 >= DOUBLE_TIME_RATIO * score:
+            bpm, phase = bpm2, phase2
+    return 60 / bpm, phase
+
+
+def beat_this_downbeats(y: np.ndarray, sr: int) -> np.ndarray:
+    _, downbeats = _beat_this_model()(y, sr)
+    return np.asarray(downbeats)
 
 
 def downbeat_phase_from_model(grid_beats: np.ndarray, raw_downbeats: np.ndarray, period: float) -> int:
@@ -123,39 +130,48 @@ def downbeat_phase_heuristic(y: np.ndarray, sr: int, grid_beats: np.ndarray) -> 
     return int(np.argmax([score[p::4].mean() for p in range(4)]))
 
 
-def kick_alignment(y: np.ndarray, sr: int, beats: np.ndarray) -> tuple[float, float, float]:
-    """Compare a beat grid to low-frequency onsets: (coverage, median offset ms, drift ms)."""
+def grid_alignment(y: np.ndarray, sr: int, beats: np.ndarray, period: float, window: int = 16) -> tuple[float, float]:
+    """Best onset alignment of each `window`-beat stretch of the grid, followed across the track.
+
+    Returns (median offset ms, drift ms). Each window searches near the previous window's
+    offset, so a grid that slides by whole beats over the track accumulates large drift
+    instead of silently matching the wrong onsets. Uses the kick/bass band and a +-1/4 beat
+    search so off-beat hi-hats (exactly 1/2 beat away) can't capture the alignment.
+    """
     hop = 128
     env = librosa.onset.onset_strength(y=y, sr=sr, hop_length=hop, fmax=200, n_mels=32)
-    peaks = librosa.onset.onset_detect(onset_envelope=env, sr=sr, hop_length=hop, units="time")
-    if len(peaks) < 2:
-        return 0.0, 0.0, 0.0
-    j = np.searchsorted(peaks, beats).clip(1, len(peaks) - 1)
-    nearest = np.where(np.abs(peaks[j] - beats) < np.abs(peaks[j - 1] - beats), peaks[j], peaks[j - 1])
-    offset_ms = (nearest - beats) * 1000
-    hit = np.abs(offset_ms) < 60
-    hits = offset_ms[hit]
-    if len(hits) < 9:
-        return float(hit.mean()), 0.0, 0.0
-    third = len(hits) // 3
-    drift = np.median(hits[-third:]) - np.median(hits[:third])
-    return float(hit.mean()), float(np.median(hits)), float(drift)
+    fps = sr / hop
+    shifts = np.linspace(-0.25, 0.25, 51) * period
+    offsets: list[float] = []
+    for start in range(0, len(beats) - window + 1, window):
+        center = offsets[-1] if offsets else 0.0
+        frames = np.round((beats[start : start + window][None, :] + center + shifts[:, None]) * fps).astype(int)
+        score = env[np.clip(frames, 0, len(env) - 1)].sum(axis=1)
+        if score.max() > 0:
+            offsets.append(center + shifts[score.argmax()])
+    if len(offsets) < 3:
+        return 0.0, 0.0
+    offsets = np.array(offsets)
+    third = max(1, len(offsets) // 3)
+    drift = np.median(offsets[-third:]) - np.median(offsets[:third])
+    return float(np.median(offsets) * 1000), float(drift * 1000)
 
 
 def detect_grid(y: np.ndarray, sr: int, duration: float, backend: str, bpm_hint: float | None = None) -> BeatGrid:
-    raw_beats, raw_downbeats = detect_raw(y, sr, backend)
-    period, first, _ = fit_grid(raw_beats, duration, bpm_hint)
+    """backend picks the downbeat method: 'beat_this' (model) or 'heuristic'."""
+    period, first = comb_grid(y, sr, duration, bpm_hint)
     beats = first + period * np.arange(int((duration - first) / period) + 1)
-    if raw_downbeats is not None and len(raw_downbeats) >= 4:
-        phase = downbeat_phase_from_model(beats, raw_downbeats, period)
-    else:
+    if backend == "beat_this":
+        phase = downbeat_phase_from_model(beats, beat_this_downbeats(y, sr), period)
+    elif backend == "heuristic":
         phase = downbeat_phase_heuristic(y, sr, beats)
-    coverage, offset_ms, drift_ms = kick_alignment(y, sr, beats)
+    else:
+        raise ValueError(f"Unknown downbeat backend: {backend}")
+    offset_ms, drift_ms = grid_alignment(y, sr, beats, period)
     return BeatGrid(
         period=period,
         beats=beats,
         downbeats=beats[phase::4],
-        kick_coverage=coverage,
-        kick_offset_ms=offset_ms,
+        onset_offset_ms=offset_ms,
         drift_ms=drift_ms,
     )

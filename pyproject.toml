@@ -29,4 +29,5 @@ build-backend = "uv_build"
 [dependency-groups]
 dev = [
     "pytest>=9.2.0",
+    "safetensors>=0.8.0",
 ]

@@ -21,9 +21,8 @@ class Analysis(BaseModel):
     beats: list[float]
     downbeats: list[float]
     beats_per_bar: int = 4
-    kick_coverage: float  # share of grid beats with a kick onset nearby
-    kick_offset_ms: float
-    grid_drift_ms: float  # kick-vs-grid drift across the track
+    onset_offset_ms: float  # median onset-vs-grid offset; constant offsets are harmless
+    grid_drift_ms: float  # onset-vs-grid drift across the track
     grid_ok: bool  # False if the track isn't constant-tempo (or the BPM is off)
 
     key: str  # Camelot, e.g. "8A"
